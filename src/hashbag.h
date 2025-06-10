@@ -35,7 +35,7 @@ class hashbag {
     bag_id = 0;
     size_t cur_size = MIN_BAG_SIZE;
     size_t total_size = 0;
-    for (size_t i = 0; total_size * load_factor < n; i++) {
+    while (total_size * load_factor < n) {
       size_t exp_samples = OVER_SAMPLING * parlay::log2_up(cur_size);
       size_t threshold = exp_samples / (cur_size * load_factor) * UINT_MAX;
       bag_sizes.push_back(cur_size);
@@ -111,6 +111,17 @@ class hashbag {
     size_t len = offsets[bag_id] + bag_sizes[bag_id];
     auto pred = parlay::delayed_seq<bool>(
         len, [&](size_t i) { return pool[i] != empty; });
+    size_t num_records = parlay::pack_into_uninitialized(pool.cut(0, len), pred,
+                                                         make_slice(out));
+    clear();
+    return num_records;
+  }
+
+  template <typename Seq, typename UnaryPred>
+  size_t pack_into_pred(Seq &&out, UnaryPred &&f) {
+    size_t len = offsets[bag_id] + bag_sizes[bag_id];
+    auto pred = parlay::delayed_seq<bool>(
+        len, [&](size_t i) { return pool[i] != empty && f(pool[i]); });
     size_t num_records = parlay::pack_into_uninitialized(pool.cut(0, len), pred,
                                                          make_slice(out));
     clear();
