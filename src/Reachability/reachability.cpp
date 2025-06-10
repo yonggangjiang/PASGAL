@@ -2,7 +2,7 @@
 
 #include <queue>
 
-#include "BFS/seq-bfs.h"
+#include "BFS/bfs.h"
 #include "graph.h"
 
 constexpr int NUM_SRC = 5;
@@ -38,7 +38,7 @@ void run(Algo &algo, const Graph &G, bool verify, NodeId s) {
   if (verify) {
     constexpr NodeId DIST_MAX = std::numeric_limits<NodeId>::max();
     printf("Running verifier...\n");
-    Seq_BFS verifier(G);
+    BFS verifier(G);
     auto exp_dist = verifier.bfs(s);
     for (size_t i = 0; i < G.n; i++) {
       if (visited[i] != (exp_dist[i] != DIST_MAX)) {
