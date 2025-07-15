@@ -48,3 +48,6 @@ perf*
 
 soc-LiveJournal1.bin
 RoadUSA_sym.bin
+
+# Ignore pbbs-maxflow submodule changes
+src/pbbs-maxflow/

@@ -1,4 +1,3 @@
-
 #ifndef GRAPH_H
 #define GRAPH_H
 
@@ -48,6 +47,10 @@ class WEdge {
       return v == rhs.v && w == rhs.w;
     }
   }
+
+  bool operator!=(const WEdge &rhs) const {
+    return !(*this == rhs);
+  }
 };
 
 template <class _NodeId = uint32_t, class _EdgeId = uint64_t,
@@ -67,10 +70,14 @@ class Graph {
   parlay::sequence<Edge> edges;
   parlay::sequence<EdgeId> in_offsets;
   parlay::sequence<Edge> in_edges;
+  // Add source and sink for flow problems
+  _NodeId source;
+  _NodeId sink;
 
   Graph() {
     n = m = 0;
     symmetrized = weighted = false;
+    source = sink = 0;
   }
 
   auto in_neighors(NodeId u) const {
@@ -158,6 +165,9 @@ class Graph {
     } else {
       weighted = false;
     }
+    // Set default source and sink for non-flow graphs
+    source = 0;
+    sink = (n > 1) ? 1 : 0;
   }
 
   void read_binary_format(char const *filename) {
@@ -191,6 +201,9 @@ class Graph {
       const void *b = data;
       munmap(const_cast<void *>(b), len);
     }
+    // Set default source and sink for non-flow graphs
+    source = 0;
+    sink = (n > 1) ? 1 : 0;
   }
 
   void read_hyperlink2012(const char *filename) {
@@ -221,6 +234,83 @@ class Graph {
       abort();
     }
     ifs.close();
+    // Set default source and sink for non-flow graphs
+    source = 0;
+    sink = (n > 1) ? 1 : 0;
+  }
+
+  void read_flowflow_format(const char *filename) {
+    std::ifstream ifs(filename, std::ios::binary);
+    if (!ifs.is_open()) {
+      std::cerr << "Error: Cannot open file " << filename << std::endl;
+      abort();
+    }
+    
+    // Read and verify header
+    char header[9];
+    ifs.read(header, 8);
+    header[8] = '\0';
+    if (std::string(header) != "FLOWFLOW") {
+      std::cerr << "Error: Invalid FLOWFLOW file header" << std::endl;
+      abort();
+    }
+    
+    // Read basic graph info
+    uint64_t n_val, m_val, source, sink;
+    ifs.read(reinterpret_cast<char*>(&n_val), sizeof(uint64_t));
+    ifs.read(reinterpret_cast<char*>(&m_val), sizeof(uint64_t));
+    ifs.read(reinterpret_cast<char*>(&source), sizeof(uint64_t));
+    ifs.read(reinterpret_cast<char*>(&sink), sizeof(uint64_t));
+    
+    n = n_val;
+    m = m_val;
+    this->source = static_cast<NodeId>(source);
+    this->sink = static_cast<NodeId>(sink);
+    
+    // Read vertex offsets
+    parlay::sequence<uint64_t> vertex_offsets(n);
+    for (size_t i = 0; i < n; ++i) {
+      uint64_t offset;
+      ifs.read(reinterpret_cast<char*>(&offset), sizeof(uint64_t));
+      vertex_offsets[i] = offset;
+    }
+    
+    // Read edge data (neighbor, capacity pairs)
+    parlay::sequence<std::pair<uint64_t, uint64_t>> edge_data(m);
+    for (size_t i = 0; i < m; ++i) {
+      uint64_t neighbor, capacity;
+      ifs.read(reinterpret_cast<char*>(&neighbor), sizeof(uint64_t));
+      ifs.read(reinterpret_cast<char*>(&capacity), sizeof(uint64_t));
+      edge_data[i] = {neighbor, capacity};
+    }
+    
+    ifs.close();
+    
+    // Convert to our graph format
+    offsets = parlay::sequence<EdgeId>(n + 1);
+    edges = parlay::sequence<Edge>(m);
+    
+    // Set up offsets array
+    offsets[0] = 0;
+    for (size_t i = 0; i < n; ++i) {
+      if (i + 1 < n) {
+        offsets[i + 1] = vertex_offsets[i + 1];
+      } else {
+        offsets[i + 1] = m;
+      }
+    }
+    
+    // Set up edges array
+    parlay::parallel_for(0, m, [&](size_t i) {
+      if constexpr (std::is_same_v<EdgeTy, Empty>) {
+        edges[i] = Edge(static_cast<NodeId>(edge_data[i].first));
+      } else {
+        edges[i] = Edge(static_cast<NodeId>(edge_data[i].first), 
+                       static_cast<EdgeTy>(edge_data[i].second));
+      }
+    });
+    
+    weighted = !std::is_same_v<EdgeTy, Empty>;
   }
 
   void read_graph(const char *filename) {
@@ -230,6 +320,20 @@ class Graph {
       read_hyperlink2012(filename);
       return;
     }
+    
+    // Check for FLOWFLOW format by reading header
+    std::ifstream test_file(filename, std::ios::binary);
+    if (test_file.is_open()) {
+      char header[9];
+      test_file.read(header, 8);
+      header[8] = '\0';
+      test_file.close();
+      if (std::string(header) == "FLOWFLOW") {
+        read_flowflow_format(filename);
+        return;
+      }
+    }
+    
     size_t idx = str_filename.find_last_of('.');
     if (idx == std::string::npos) {
       std::cerr << "Error: No graph extension provided" << std::endl;
@@ -282,6 +386,46 @@ class Graph {
                    })));
     }
     chars_to_file(chars, std::string(filename));
+  }
+
+  void write_flowflow_format(const char *filename, NodeId source = 0, NodeId sink = 1) {
+    std::ofstream ofs(filename, std::ios::binary);
+    if (!ofs.is_open()) {
+      std::cerr << "Error: Cannot open file " << filename << std::endl;
+      abort();
+    }
+    
+    // Write header
+    ofs.write("FLOWFLOW", 8);
+    
+    // Write basic graph info
+    uint64_t n_val = n, m_val = m;
+    uint64_t source_val = source, sink_val = sink;
+    ofs.write(reinterpret_cast<const char*>(&n_val), sizeof(uint64_t));
+    ofs.write(reinterpret_cast<const char*>(&m_val), sizeof(uint64_t));
+    ofs.write(reinterpret_cast<const char*>(&source_val), sizeof(uint64_t));
+    ofs.write(reinterpret_cast<const char*>(&sink_val), sizeof(uint64_t));
+    
+    // Write vertex offsets
+    for (size_t i = 0; i < n; ++i) {
+      uint64_t offset = offsets[i];
+      ofs.write(reinterpret_cast<const char*>(&offset), sizeof(uint64_t));
+    }
+    
+    // Write edge data (neighbor, capacity pairs)
+    for (size_t i = 0; i < m; ++i) {
+      uint64_t neighbor = static_cast<uint64_t>(edges[i].v);
+      uint64_t capacity;
+      if constexpr (std::is_same_v<EdgeTy, Empty>) {
+        capacity = 1; // Default capacity for unweighted graphs
+      } else {
+        capacity = static_cast<uint64_t>(edges[i].w);
+      }
+      ofs.write(reinterpret_cast<const char*>(&neighbor), sizeof(uint64_t));
+      ofs.write(reinterpret_cast<const char*>(&capacity), sizeof(uint64_t));
+    }
+    
+    ofs.close();
   }
 
   void write_binary_format(char const *filename) {
@@ -347,7 +491,7 @@ class Graph {
 
   // sanity check of input graph
   void validate() {
-    parlay::parallel_for(0, n + 1, [&](size_t i) {
+    auto check_offsets = [&](size_t i) {
       if (i == 0) {
         assert(offsets[i] == 0);
       } else if (i == n) {
@@ -355,42 +499,53 @@ class Graph {
       } else {
         assert(offsets[i] >= offsets[i - 1]);
       }
-    });
-    parlay::parallel_for(0, m, [&](size_t i) {
+    };
+
+    auto check_edges = [&](size_t i) {
       NodeId u = edges[i].v;
       assert(u >= 0 && u < n);
-    });
-    bool sorted = true;
-    parlay::parallel_for(0, n, [&](NodeId u) {
-      parlay::parallel_for(offsets[u], offsets[u + 1], [&](size_t i) {
-        NodeId v = edges[i].v;
-        if (i != offsets[u] && v < edges[i - 1].v && sorted == true) {
+    };
+
+    auto check_sorted = [&](NodeId u) {
+      bool sorted = true;
+      for (size_t i = offsets[u] + 1; i < offsets[u + 1]; ++i) {
+        if (edges[i].v < edges[i - 1].v) {
           sorted = false;
+          break;
         }
-      });
-    });
-    if (!sorted) {
-      printf("Warning: Edges are not sorted\n");
-    }
+      }
+      if (!sorted) {
+        printf("Warning: Edges are not sorted\n");
+      }
+    };
+
+    parlay::parallel_for(0, n + 1, check_offsets);
+    parlay::parallel_for(0, m, check_edges);
+    parlay::parallel_for(0, n, check_sorted);
+
     count_self_loop_and_parallel_edges();
+
     if (symmetrized) {
-      parlay::parallel_for(0, n, [&](NodeId u) {
-        parlay::parallel_for(offsets[u], offsets[u + 1], [&](size_t i) {
+      auto check_symmetry = [&](NodeId u) {
+        for (size_t i = offsets[u]; i < offsets[u + 1]; ++i) {
           NodeId v = edges[i].v;
           auto e = WEdge(u, edges[i].w);
           if (*std::lower_bound(edges.begin() + offsets[v],
                                 edges.begin() + offsets[v + 1], e) != e) {
-            if (symmetrized == true) {
-              symmetrized = false;
-            }
+            symmetrized = false;
+            break;
           }
-        });
-      });
+        }
+      };
+
+      parlay::parallel_for(0, n, check_symmetry);
+
       if (!symmetrized) {
         std::cerr << "Error: edges are not symmetrized" << std::endl;
         abort();
       }
     }
+
     printf("Passed!\n");
   }
 
