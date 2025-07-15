@@ -1,3 +1,6 @@
+# Large input files
+inputs/
+
 # Executables with no extension
 *
 !*.*
