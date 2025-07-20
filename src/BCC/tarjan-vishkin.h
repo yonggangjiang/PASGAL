@@ -96,7 +96,7 @@ class Tarjan_Vishkin : public BCC<Graph> {
     Graph GA;
     GA.n = edgelist.size();
     GA.m = sym_edges.size();
-    using Edge = WEdge<NodeId, Empty>;
+    using Edge = typename Graph::Edge;
     GA.offsets = sequence<EdgeId>(GA.n + 1, GA.m);
     GA.edges = sequence<Edge>::uninitialized(GA.m);
     parallel_for(0, GA.m, [&](size_t i) {

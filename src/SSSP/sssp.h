@@ -18,7 +18,8 @@ class SSSP {
  protected:
   using NodeId = typename Graph::NodeId;
   using EdgeId = typename Graph::EdgeId;
-  using EdgeTy = typename Graph::EdgeTy;
+  using Edge = typename Graph::Edge;
+  using EdgeTy = typename Edge::EdgeTy;
 
   static constexpr EdgeTy DIST_MAX = numeric_limits<EdgeTy>::max();
   static constexpr size_t LOCAL_QUEUE_SIZE = 128;
@@ -240,7 +241,8 @@ template <class Graph>
 class Rho_Stepping : public SSSP<Graph> {
   using NodeId = typename Graph::NodeId;
   using EdgeId = typename Graph::EdgeId;
-  using EdgeTy = typename Graph::EdgeTy;
+  using Edge = typename Graph::Edge;
+  using EdgeTy = typename Edge::EdgeTy;
   using SSSP<Graph>::frontier_size;
   using SSSP<Graph>::sparse;
   using SSSP<Graph>::dist;
@@ -291,7 +293,8 @@ class Rho_Stepping : public SSSP<Graph> {
 
 template <class Graph>
 class Delta_Stepping : public SSSP<Graph> {
-  using EdgeTy = typename Graph::EdgeTy;
+  using Edge = typename Graph::Edge;
+  using EdgeTy = typename Edge::EdgeTy;
 
   EdgeTy delta;
   EdgeTy thres;
@@ -310,7 +313,8 @@ class Delta_Stepping : public SSSP<Graph> {
 template <class Graph>
 class Bellman_Ford : public SSSP<Graph> {
   using NodeId = typename Graph::NodeId;
-  using EdgeTy = typename Graph::EdgeTy;
+  using Edge = typename Graph::Edge;
+  using EdgeTy = typename Edge::EdgeTy;
 
   static constexpr EdgeTy DIST_MAX = numeric_limits<EdgeTy>::max();
 

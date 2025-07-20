@@ -128,7 +128,7 @@ int main(int argc, char *argv[]) {
   }
 
   printf("Reading graph...\n");
-  Graph<NodeId, EdgeId, EdgeTy> G;
+  Graph<NodeId, EdgeId, WeightedEdge<NodeId, EdgeTy>> G;
   G.symmetrized = symmetrized;
   if (!strcmp(input_path, "random")) {
     G.generate_random_graph();

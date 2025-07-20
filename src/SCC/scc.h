@@ -101,7 +101,7 @@ class SCC {
     size_t step = 2;
     size_t start = 0;
     size_t end=start+step;
-    size_t round = 0;
+    // size_t round = 0;
     // MULTI_REACH<Graph,LabelT> multi_reach_solver(vertices.size(), G.n);
     MULTI_REACH<Graph,LabelT> multi_reach_solver(G.n, G.n);
     size_t fwd_m=1; size_t bwd_m=1;
@@ -115,7 +115,7 @@ class SCC {
     // float set_intersect_time=0;
     parlay::internal::timer t_round(" ",false);
     while (end < n_remain){
-      round++;
+      // round++;
       end = std::min(start+step, n_remain);
       // printf("Round: %ld  start: %ld  end: %ld n_remain: %lu\n", round, start, end, n_remain);
       auto sources = parlay::filter(vertices.cut(start, end), 

@@ -83,7 +83,7 @@ int main(int argc, char *argv[]) {
   }
 
   printf("Reading graph...\n");
-  Graph<NodeId, EdgeId, EdgeTy> G;
+  Graph<NodeId, EdgeId, WeightedEdge<NodeId, EdgeTy>> G;
   G.read_graph(input_path);
   G.symmetrized = symmetrized;
   if (!G.weighted) {

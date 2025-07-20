@@ -21,43 +21,45 @@
 
 class Empty {};
 
-template <class NodeId, class EdgeTy>
-class WEdge {
+template <typename NodeId>
+class BaseEdge {
  public:
   NodeId v;
-  [[no_unique_address]] EdgeTy w;
-  WEdge() {}
-  WEdge(NodeId _v) : v(_v) {}
-  WEdge(NodeId _v, EdgeTy _w) : v(_v), w(_w) {}
+  BaseEdge() = default;
+  BaseEdge(NodeId _v) : v(_v) {}
+  bool operator<(const BaseEdge &rhs) const { return v < rhs.v; }
+  bool operator==(const BaseEdge &rhs) const { return v == rhs.v; }
+};
 
-  bool operator<(const WEdge &rhs) const {
-    if constexpr (std::is_same_v<EdgeTy, Empty>) {
-      return v < rhs.v;
-    } else {
-      if (v != rhs.v) {
-        return v < rhs.v;
-      }
-      return w < rhs.w;
-    }
+template <class NodeId, class _EdgeTy>
+struct WeightedEdge : public BaseEdge<NodeId> {
+  using EdgeTy = _EdgeTy;
+  EdgeTy w;
+
+  WeightedEdge() = default;
+  WeightedEdge(NodeId _v, EdgeTy _w) : BaseEdge<NodeId>(_v), w(_w) {}
+  bool operator<(const WeightedEdge &rhs) const {
+    return this->v < rhs.v || (this->v == rhs.v && w < rhs.w);
   }
-
-  bool operator==(const WEdge &rhs) const {
-    if constexpr (std::is_same_v<EdgeTy, Empty>) {
-      return v == rhs.v;
-    } else {
-      return v == rhs.v && w == rhs.w;
-    }
+  bool operator==(const WeightedEdge &rhs) const {
+    return this->v == rhs.v && w == rhs.w;
   }
 };
 
+template <typename T, typename = void>
+struct has_member_w : std::false_type {};
+
+template <typename T>
+struct has_member_w<T, std::void_t<decltype(std::declval<T>().w)>>
+    : std::true_type {};
+
 template <class _NodeId = uint32_t, class _EdgeId = uint64_t,
-          class _EdgeTy = Empty>
+          class _Edge = BaseEdge<_NodeId>>
 class Graph {
  public:
   using NodeId = _NodeId;
   using EdgeId = _EdgeId;
-  using EdgeTy = _EdgeTy;
-  using Edge = WEdge<NodeId, EdgeTy>;
+  using Edge = _Edge;
 
   size_t n;
   size_t m;
@@ -85,7 +87,9 @@ class Graph {
     parlay::sequence<std::pair<NodeId, Edge>> edgelist(m);
     parlay::parallel_for(0, n, [&](NodeId u) {
       parlay::parallel_for(offsets[u], offsets[u + 1], [&](EdgeId i) {
-        edgelist[i] = std::make_pair(edges[i].v, Edge(u, edges[i].w));
+        edgelist[i].first = edges[i].v;
+        edgelist[i].second = edges[i];
+        edgelist[i].second.v = u;
       });
     });
     parlay::sort_inplace(
@@ -138,22 +142,22 @@ class Graph {
           make_slice(tokens_seq[i + n + 3]));
     });
     if (weighted_input) {
-      if constexpr (std::is_same_v<EdgeTy, Empty>) {
-        weighted = false;
-        std::cout << "Warning: skipping edge weights in file" << std::endl;
-      } else {
+      if constexpr (has_member_w<Edge>::value) {
         weighted = true;
         parlay::parallel_for(0, m, [&](size_t i) {
-          if constexpr (std::is_integral_v<EdgeTy>) {
+          if constexpr (std::is_integral_v<decltype(edges[i].w)>) {
             edges[i].w = parlay::internal::chars_to_int_t<NodeId>(
                 make_slice(tokens_seq[i + n + m + 3]));
-          } else if constexpr (std::is_floating_point_v<EdgeTy>) {
+          } else if constexpr (std::is_floating_point_v<decltype(edges[i].w)>) {
             edges[i].w = parlay::chars_to_double(tokens_seq[i + n + m + 3]);
           } else {
             std::cerr << "Error: EdgeTy is not arithmetic" << std::endl;
             abort();
           }
         });
+      } else {
+        weighted = false;
+        std::cout << "Warning: skipping edge weights in file" << std::endl;
       }
     } else {
       weighted = false;
@@ -248,10 +252,10 @@ class Graph {
 
   void write_pbbs_format(char const *filename) {
     parlay::chars chars;
-    if constexpr (std::is_same_v<EdgeTy, Empty>) {
-      chars.insert(chars.end(), parlay::to_chars("AdjacencyGraph\n"));
-    } else {
+    if constexpr (has_member_w<Edge>::value) {
       chars.insert(chars.end(), parlay::to_chars("WeightedAdjacencyGraph\n"));
+    } else {
+      chars.insert(chars.end(), parlay::to_chars("AdjacencyGraph\n"));
     }
     chars.insert(chars.end(), parlay::to_chars(std::to_string(n) + "\n"));
     chars.insert(chars.end(), parlay::to_chars(std::to_string(m) + "\n"));
@@ -271,7 +275,7 @@ class Graph {
                      return parlay::to_chars('\n');
                    }
                  })));
-    if constexpr (!std::is_same_v<EdgeTy, Empty>) {
+    if constexpr (has_member_w<Edge>::value) {
       chars.insert(chars.end(),
                    parlay::flatten(parlay::tabulate(m * 2, [&](size_t i) {
                      if (i % 2 == 0) {
@@ -307,7 +311,7 @@ class Graph {
 
   // Generates integral edge weights in range [l, r)
   void generate_random_weight(uint32_t l, uint32_t r) {
-    if constexpr (std::is_same_v<EdgeTy, Empty>) {
+    if constexpr (!has_member_w<Edge>::value) {
       std::cerr << "Error: Graph instance does not have a edge weight field"
                 << std::endl;
       abort();
@@ -442,12 +446,10 @@ class Forest {
   parlay::sequence<NodeId> offsets;
 };
 
-template <class NodeId, class EdgeId, class EdgeTy>
-Graph<NodeId, EdgeId, EdgeTy> edgelist2graph(
-    parlay::sequence<std::pair<NodeId, WEdge<NodeId, EdgeTy>>> &edgelist,
-    size_t n, size_t m) {
-  using Edge = WEdge<NodeId, EdgeTy>;
-  Graph<NodeId, EdgeId, EdgeTy> G;
+template <class NodeId, class EdgeId, class Edge>
+Graph<NodeId, EdgeId, Edge> edgelist2graph(
+    parlay::sequence<std::pair<NodeId, Edge>> &edgelist, size_t n, size_t m) {
+  Graph<NodeId, EdgeId, Edge> G;
   G.n = n;
   G.m = m;
   parlay::sort_inplace(
@@ -478,15 +480,15 @@ Graph make_symmetrized(const Graph &G) {
   size_t m = G.m;
   using NodeId = typename Graph::NodeId;
   using EdgeId = typename Graph::EdgeId;
-  using EdgeTy = typename Graph::EdgeTy;
   using Edge = typename Graph::Edge;
   parlay::sequence<std::pair<NodeId, Edge>> edgelist(m * 2);
   parlay::parallel_for(0, n, [&](NodeId u) {
     parlay::parallel_for(G.offsets[u], G.offsets[u + 1], [&](EdgeId i) {
-      NodeId v = G.edges[i].v;
-      EdgeTy w = G.edges[i].w;
-      edgelist[i * 2] = std::make_pair(u, Edge(v, w));
-      edgelist[i * 2 + 1] = std::make_pair(v, Edge(u, w));
+      edgelist[i * 2].first = u;
+      edgelist[i * 2 + 1].first = G.edges[i].v;
+      edgelist[i * 2].second = edgelist[i * 2 + 1].second = G.edges[i];
+      edgelist[i * 2].second.v = G.edges[i].v;
+      edgelist[i * 2 + 1].second.v = u;
     });
   });
   sort_inplace(make_slice(edgelist));
@@ -500,7 +502,7 @@ Graph make_symmetrized(const Graph &G) {
     return true;
   });
   edgelist = parlay::pack(make_slice(edgelist), pred);
-  return edgelist2graph<NodeId, EdgeId, EdgeTy>(edgelist, n, edgelist.size());
+  return edgelist2graph<NodeId, EdgeId, Edge>(edgelist, n, edgelist.size());
 }
 
 template <class Graph>
@@ -509,15 +511,16 @@ Graph Transpose(const Graph &G) {
   size_t m = G.m;
   using NodeId = typename Graph::NodeId;
   using EdgeId = typename Graph::EdgeId;
-  using EdgeTy = typename Graph::EdgeTy;
   using Edge = typename Graph::Edge;
   parlay::sequence<std::pair<NodeId, Edge>> edgelist(m);
   parlay::parallel_for(0, n, [&](NodeId u) {
     parlay::parallel_for(G.offsets[u], G.offsets[u + 1], [&](EdgeId i) {
-      edgelist[i] = std::make_pair(G.edges[i].v, Edge(u, G.edges[i].w));
+      edgelist[i].first = G.edges[i].v;
+      edgelist[i].second = G.edges[i];
+      edgelist[i].second.v = u;
     });
   });
-  return edgelist2graph<NodeId, EdgeId, EdgeTy>(edgelist, n, m);
+  return edgelist2graph<NodeId, EdgeId, Edge>(edgelist, n, m);
 }
 
 #endif  // GRAPH_H

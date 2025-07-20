@@ -8,7 +8,8 @@ using namespace parlay;
 template <class Graph>
 class Dijkstra {
   using NodeId = typename Graph::NodeId;
-  using EdgeTy = typename Graph::EdgeTy;
+  using Edge = typename Graph::Edge;
+  using EdgeTy = typename Edge::EdgeTy;
 
   static constexpr EdgeTy DIST_MAX = numeric_limits<EdgeTy>::max();
 

@@ -53,7 +53,7 @@ Forest<NodeId> spanning_forest(
   F.G.m = label_edge.size();
   F.G.offsets[F.G.n] = F.G.m;
 
-  using Edge = WEdge<NodeId, Empty>;
+  using Edge = typename Graph::Edge;
   F.G.edges = sequence<Edge>::uninitialized(label_edge.size());
   parallel_for(0, F.G.m, [&](size_t i) { F.G.edges[i].v = get<2>(label_edge[i]); });
   return F;
