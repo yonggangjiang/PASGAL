@@ -13,7 +13,7 @@ class Dinic {
   using Edge = typename Graph::Edge;
   using FlowTy = typename Edge::FlowTy;
 
-  // cannot use const Graph& because e.flow is modified
+  // cannot use const Graph& because e.w is modified
   Graph& G;
   sequence<int> level;
   // 32 should change to 64 if one vertex has more than 2^32 neighbors
@@ -36,7 +36,7 @@ class Dinic {
       q.pop();
       for (EdgeId i = G.offsets[v]; i < G.offsets[v + 1]; i++) {
         auto& e = G.edges[i];
-        if (e.flow < e.w && level[e.v] < 0) {
+        if (e.w > 0 && level[e.v] < 0) {
           level[e.v] = level[v] + 1;
           q.push(e.v);
         }
@@ -53,11 +53,11 @@ class Dinic {
     for (auto& edge_id = iter[u]; edge_id < G.offsets[u + 1] - G.offsets[u];
          edge_id++) {
       auto& e = G.edges[G.offsets[u] + edge_id];
-      if (e.flow < e.w && level[e.v] == level[u] + 1) {
-        FlowTy d = dfs(e.v, t, min(upTo - flow, e.w - e.flow));
+      if (e.w > 0 && level[e.v] == level[u] + 1) {
+        FlowTy d = dfs(e.v, t, min(upTo - flow, e.w));
         if (d > 0) {
-          e.flow += d;
-          G.edges[G.offsets[e.v] + e.rev].flow -= d;
+          e.w -= d;
+          G.edges[e.rev].w += d;
           flow += d;
           if (flow == upTo) {
             break;
@@ -75,7 +75,6 @@ class Dinic {
     if (s == t) {
       return 0;
     }
-    parlay::parallel_for(0, G.m, [&](EdgeId i) { G.edges[i].flow = 0; });
     FlowTy flow = 0;
     while (bfs(s, t)) {
       fill(iter.begin(), iter.end(), 0);
