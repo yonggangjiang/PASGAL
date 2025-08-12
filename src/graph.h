@@ -164,6 +164,11 @@ class Graph {
       }
     } else {
       weighted = false;
+      // Add random weights if EdgeTy is not Empty
+      if constexpr (!std::is_same_v<EdgeTy, Empty>) {
+        generate_random_weight(1, n);
+        std::cout << "Added random weights in range [1, " << n << "]" << std::endl;
+      }
     }
     // Set default source and sink for non-flow graphs
     source = 0;
@@ -201,6 +206,14 @@ class Graph {
       const void *b = data;
       munmap(const_cast<void *>(b), len);
     }
+    
+    // Binary format doesn't include weights, so add random weights if EdgeTy is not Empty
+    weighted = false;
+    if constexpr (!std::is_same_v<EdgeTy, Empty>) {
+      generate_random_weight(1, n);
+      std::cout << "Added random weights in range [1, " << n << "]" << std::endl;
+    }
+    
     // Set default source and sink for non-flow graphs
     source = 0;
     sink = (n > 1) ? 1 : 0;
@@ -234,6 +247,14 @@ class Graph {
       abort();
     }
     ifs.close();
+    
+    // Binary format doesn't include weights, so add random weights if EdgeTy is not Empty
+    weighted = false;
+    if constexpr (!std::is_same_v<EdgeTy, Empty>) {
+      generate_random_weight(1, n);
+      std::cout << "Added random weights in range [1, " << n << "]" << std::endl;
+    }
+    
     // Set default source and sink for non-flow graphs
     source = 0;
     sink = (n > 1) ? 1 : 0;
