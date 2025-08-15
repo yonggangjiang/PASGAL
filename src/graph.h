@@ -176,6 +176,7 @@ class Graph {
   }
 
   void read_binary_format(char const *filename) {
+    std::cout << "Opening binary file..." << std::flush;
     // Uses mmap to accelerate reading
     struct stat sb;
     int fd = open(filename, O_RDONLY);
@@ -187,6 +188,7 @@ class Graph {
       std::cerr << "Error: Unable to acquire file stat" << std::endl;
       abort();
     }
+    std::cout << " mapping..." << std::flush;
     char *data =
         static_cast<char *>(mmap(0, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0));
     size_t len = sb.st_size;
@@ -194,18 +196,23 @@ class Graph {
     m = reinterpret_cast<uint64_t *>(data)[1];
     size_t sizes = reinterpret_cast<uint64_t *>(data)[2];
     assert(sizes == (n + 1) * 8 + m * 4 + 3 * 8);
+    std::cout << " allocating..." << std::flush;
     offsets = parlay::sequence<EdgeId>::uninitialized(n + 1);
     edges = parlay::sequence<Edge>::uninitialized(m);
+    std::cout << " reading offsets..." << std::flush;
     parlay::parallel_for(0, n + 1, [&](size_t i) {
       offsets[i] = reinterpret_cast<uint64_t *>(data + 3 * 8)[i];
     });
+    std::cout << " reading edges..." << std::flush;
     parlay::parallel_for(0, m, [&](size_t i) {
       edges[i].v = reinterpret_cast<uint32_t *>(data + 3 * 8 + (n + 1) * 8)[i];
     });
+    std::cout << " unmapping..." << std::flush;
     if (data) {
       const void *b = data;
       munmap(const_cast<void *>(b), len);
     }
+    std::cout << " done" << std::endl;
     
     // Binary format doesn't include weights, so add random weights if EdgeTy is not Empty
     weighted = false;
@@ -470,7 +477,8 @@ class Graph {
     ofs.close();
   }
 
-  // Generates integral edge weights in range [l, r)
+  // Generates integral edge weights in range [l, r) based on edge endpoints
+  // This ensures the same graph structure always produces the same weights
   void generate_random_weight(uint32_t l, uint32_t r) {
     if constexpr (std::is_same_v<EdgeTy, Empty>) {
       std::cerr << "Error: Graph instance does not have a edge weight field"
@@ -482,13 +490,21 @@ class Graph {
     } else {
       weighted = true;
     }
+    
+    std::cout << "Generating deterministic weights for " << m << " edges..." << std::flush;
     uint32_t range = r - l + 1;
+    
+    // Generate weights based on edge endpoints for deterministic results
     parlay::parallel_for(0, n, [&](NodeId u) {
       parlay::parallel_for(offsets[u], offsets[u + 1], [&](EdgeId i) {
         NodeId v = edges[i].v;
-        edges[i].w = ((parlay::hash32(u) ^ parlay::hash32(v)) % range) + l;
+        // Use hash of both endpoints to generate deterministic weight
+        uint32_t hash_val = (u * 2654435761U) ^ (v * 2654435761U) ^ ((u + v) * 2654435761U);
+        edges[i].w = (hash_val % range) + l;
       });
     });
+    
+    std::cout << " done" << std::endl;
   }
 
   void count_self_loop_and_parallel_edges() {

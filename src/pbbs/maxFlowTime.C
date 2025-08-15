@@ -79,8 +79,20 @@ int main(int argc, char* argv[]) {
   intT S, T;
   timer t;
   t.start();
-  ifstream in(iFile, ifstream::binary);
-  FlowGraph<intT> g = readFlowGraph<intT>(in);
+  
+  // Check if it's a binary file by trying to read the header
+  ifstream test_in(iFile, ifstream::binary);
+  char buf[10];
+  test_in.read(buf, 8);
+  buf[8] = 0;
+  test_in.close();
+  
+  FlowGraph<intT> g = (strcmp(buf, "FLOWFLOW") == 0) ? 
+    ([&]() { 
+      ifstream in(iFile, ifstream::binary); 
+      return readFlowGraph<intT>(in); 
+    })() : readFlowGraphBinary<intT>(iFile);
+  
   t.stop();
   cout << "reading time: " << t.total() << endl;
   timeMaxFlow(g, rounds, oFile);

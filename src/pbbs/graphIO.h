@@ -26,6 +26,10 @@
 #include <iostream>
 #include <stdint.h>
 #include <cstring>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "parallel.h"
 #include "IO.h"
 
@@ -327,9 +331,11 @@ namespace benchIO {
   }
   template<typename intT>
   FlowGraph<intT> readFlowGraph(istream& in) {
+    cout << "Starting readFlowGraph..." << endl;
     char buf[10];
     in.read(buf, 8);
     buf[8] = 0;
+    cout << "Read header: " << buf << endl;
     
     // Check if it's FLOWFLOW format
     if (strcmp(buf, "FLOWFLOW") == 0) {
@@ -357,6 +363,7 @@ namespace benchIO {
       }
       return FlowGraph<intT>(wghGraph<intT>(v, n, m, adj, weights), S, T);
     } else {
+      cout << "Binary format detected, reading header..." << endl;
       // Assume binary format - rewind and read as binary
       in.seekg(0, ios::beg);
       
@@ -366,16 +373,20 @@ namespace benchIO {
       in.read(reinterpret_cast<char*>(&m), sizeof(uint64_t));
       in.read(reinterpret_cast<char*>(&sizes), sizeof(uint64_t));
       
+      cout << "Binary graph: n=" << n << ", m=" << m << ", sizes=" << sizes << endl;
+      
       // Verify expected size
       if (sizes != (n + 1) * 8 + m * 4 + 3 * 8) {
         errorOut("Invalid binary graph file format");
       }
       
       // Read offsets
+      cout << "Reading offsets array..." << endl;
       uint64_t* offsets_raw = newA(uint64_t, n + 1);
       in.read(reinterpret_cast<char*>(offsets_raw), (n + 1) * sizeof(uint64_t));
       
       // Read edge neighbors
+      cout << "Reading edge neighbors..." << endl;
       uint32_t* neighbors_raw = newA(uint32_t, m);
       in.read(reinterpret_cast<char*>(neighbors_raw), m * sizeof(uint32_t));
       
@@ -392,13 +403,14 @@ namespace benchIO {
       
       for (intT i = 0; i < m; ++i) {
         adj[i] = static_cast<intT>(neighbors_raw[i]);
-        // Generate random weight as large as graph size using hash
+        // Generate deterministic weight based on edge endpoints
         // Find which vertex this edge belongs to
         intT u = 0;
         while (u < n && offsets_raw[u + 1] <= i) u++;
         intT v_id = adj[i];
-        // Generate deterministic but pseudo-random weight based on edge endpoints
-        weights[i] = ((u * 2654435761U) ^ (v_id * 2654435761U)) % n + 1;
+        // Generate deterministic weight using hash of both endpoints
+        uint32_t hash_val = (u * 2654435761U) ^ (v_id * 2654435761U) ^ ((u + v_id) * 2654435761U);
+        weights[i] = (hash_val % n) + 1;
       }
       
       free(offsets_raw);
@@ -513,6 +525,76 @@ namespace benchIO {
     free(edges);
     free(pos);
     return FlowGraph<intT>(wghGraph<intT>(v, n, m, adj, weights), S, T);
+  }
+
+  template<typename intT>
+  FlowGraph<intT> readFlowGraphBinary(const char* filename) {
+    cout << "Reading binary format with memory mapping..." << endl;
+    
+    // Use memory mapping for fast reading
+    struct stat sb;
+    int fd = open(filename, O_RDONLY);
+    if (fd == -1) {
+      errorOut("Cannot open file for memory mapping");
+    }
+    if (fstat(fd, &sb) == -1) {
+      errorOut("Unable to acquire file stat");
+    }
+    
+    char *data = static_cast<char *>(mmap(0, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0));
+    if (data == MAP_FAILED) {
+      errorOut("Memory mapping failed");
+    }
+    
+    // Read binary format header from memory mapped data
+    uint64_t n = reinterpret_cast<uint64_t *>(data)[0];
+    uint64_t m = reinterpret_cast<uint64_t *>(data)[1];
+    uint64_t sizes = reinterpret_cast<uint64_t *>(data)[2];
+    
+    cout << "Memory mapped binary graph: n=" << n << ", m=" << m << ", sizes=" << sizes << endl;
+    
+    // Verify expected size
+    if (sizes != (n + 1) * 8 + m * 4 + 3 * 8) {
+      errorOut("Invalid binary graph file format");
+    }
+    
+    // Allocate arrays for the graph
+    intT* adj = newA(intT, m);
+    intT* weights = newA(intT, m);
+    wghVertex<intT>* v = newA(wghVertex<intT>, n);
+    
+    // Get pointers to data sections
+    uint64_t* offsets_raw = reinterpret_cast<uint64_t*>(data + 3 * 8);
+    uint32_t* neighbors_raw = reinterpret_cast<uint32_t*>(data + 3 * 8 + (n + 1) * 8);
+    
+    cout << "Converting to flow graph format..." << endl;
+    
+    // Set up vertex structure
+    for (intT i = 0; i < n; ++i) {
+      intT start = offsets_raw[i];
+      intT end = offsets_raw[i + 1];
+      intT degree = end - start;
+      
+      v[i].degree = degree;
+      v[i].Neighbors = adj + start;
+      v[i].nghWeights = weights + start;
+      
+      // Copy neighbors and generate random weights
+      for (intT j = 0; j < degree; j++) {
+        adj[start + j] = neighbors_raw[start + j];
+        // Generate deterministic weight based on edge endpoints
+        intT v_id = neighbors_raw[start + j];
+        uint32_t hash_val = (i * 2654435761U) ^ (v_id * 2654435761U) ^ ((i + v_id) * 2654435761U);
+        weights[start + j] = (hash_val % n) + 1;
+      }
+    }
+    
+    // Unmap the file
+    munmap(data, sb.st_size);
+    close(fd);
+    
+    cout << "Binary graph loaded successfully, added random weights" << endl;
+    return FlowGraph<intT>(wghGraph<intT>(v, n, m, adj, weights), 0, (n > 1) ? 1 : 0);
   }
 };
 
