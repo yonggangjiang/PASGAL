@@ -1,0 +1,8 @@
+CXX = g++
+CXXFLAGS = -std=c++17 -O3 -Wall -fopenmp -static-libgcc -static-libstdc++
+
+compute_diameter: compute_diameter.cpp
+	$(CXX) $(CXXFLAGS) -o compute_diameter compute_diameter.cpp
+
+clean:
+	rm -f compute_diameter

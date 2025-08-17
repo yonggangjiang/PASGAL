@@ -76,22 +76,31 @@ int main(int argc, char* argv[]) {
   char* iFile = P.getArgument(0);
   char* oFile = P.getOptionValue("-o");
   int rounds = P.getOptionIntValue("-r",1);
-  intT S, T;
   timer t;
   t.start();
   
-  // Check if it's a binary file by trying to read the header
-  ifstream test_in(iFile, ifstream::binary);
-  char buf[10];
-  test_in.read(buf, 8);
-  buf[8] = 0;
-  test_in.close();
-  
-  FlowGraph<intT> g = (strcmp(buf, "FLOWFLOW") == 0) ? 
-    ([&]() { 
-      ifstream in(iFile, ifstream::binary); 
-      return readFlowGraph<intT>(in); 
-    })() : readFlowGraphBinary<intT>(iFile);
+  FlowGraph<intT> g = [&]() {
+    // Check file extension to determine format
+    string filename(iFile);
+    if (filename.find(".adj") != string::npos) {
+      // Read .adj file
+      return readFlowGraphFromAdj<intT>(iFile);
+    } else {
+      // Check if it's a binary file by trying to read the header
+      ifstream test_in(iFile, ifstream::binary);
+      char buf[10];
+      test_in.read(buf, 8);
+      buf[8] = 0;
+      test_in.close();
+      
+      if (strcmp(buf, "FLOWFLOW") == 0) {
+        ifstream in(iFile, ifstream::binary); 
+        return readFlowGraph<intT>(in); 
+      } else {
+        return readFlowGraphBinary<intT>(iFile);
+      }
+    }
+  }();
   
   t.stop();
   cout << "reading time: " << t.total() << endl;

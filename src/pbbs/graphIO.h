@@ -596,6 +596,106 @@ namespace benchIO {
     cout << "Binary graph loaded successfully, added random weights" << endl;
     return FlowGraph<intT>(wghGraph<intT>(v, n, m, adj, weights), 0, (n > 1) ? 1 : 0);
   }
+
+  template<typename intT>
+  FlowGraph<intT> readFlowGraphFromAdj(const char* filename) {
+    cout << "Reading .adj file: " << filename << endl;
+    
+    _seq<char> file_content = readStringFromFile(const_cast<char*>(filename));
+    words W = stringToWords(file_content.A, file_content.n);
+    
+    if (W.m < 3) {
+      errorOut("Bad .adj file: too few tokens");
+    }
+    
+    string header(W.Strings[0]);
+    bool weighted_input = false;
+    
+    if (header == "WeightedAdjacencyGraph") {
+      weighted_input = true;
+    } else if (header == "AdjacencyGraph") {
+      weighted_input = false;
+    } else {
+      errorOut("Bad .adj file: invalid header");
+    }
+    
+    intT n = atol(W.Strings[1]);
+    intT m = atol(W.Strings[2]);
+    
+    cout << "Graph: n=" << n << ", m=" << m << ", weighted=" << weighted_input << endl;
+    
+    // Expected file format:
+    // AdjacencyGraph (or WeightedAdjacencyGraph)
+    // n
+    // m
+    // offset[0] offset[1] ... offset[n-1]
+    // neighbor[0] neighbor[1] ... neighbor[m-1]
+    // [weight[0] weight[1] ... weight[m-1]]  // only for WeightedAdjacencyGraph
+    
+    intT expected_tokens = n + m + 3;
+    if (weighted_input) {
+      expected_tokens += m;
+    }
+    
+    if (W.m != expected_tokens) {
+      cout << "Expected " << expected_tokens << " tokens, got " << W.m << endl;
+      errorOut("Bad .adj file: incorrect number of tokens");
+    }
+    
+    // Read offsets
+    intT* offsets = newA(intT, n + 1);
+    for (intT i = 0; i < n; i++) {
+      offsets[i] = atol(W.Strings[i + 3]);
+    }
+    offsets[n] = m;
+    
+    // Read neighbors
+    intT* adj = newA(intT, m);
+    for (intT i = 0; i < m; i++) {
+      adj[i] = atol(W.Strings[i + n + 3]);
+    }
+    
+    // Read or generate weights
+    intT* weights = newA(intT, m);
+    if (weighted_input) {
+      // Read weights from file
+      for (intT i = 0; i < m; i++) {
+        weights[i] = atol(W.Strings[i + n + m + 3]);
+      }
+      cout << "Read weights from file" << endl;
+    } else {
+      // Generate deterministic weights
+      for (intT i = 0; i < m; i++) {
+        // Find which vertex this edge belongs to
+        intT u = 0;
+        while (u < n && offsets[u + 1] <= i) u++;
+        intT v = adj[i];
+        // Generate deterministic weight using hash of both endpoints
+        uint32_t hash_val = (u * 2654435761U) ^ (v * 2654435761U) ^ ((u + v) * 2654435761U);
+        weights[i] = (hash_val % n) + 1;
+      }
+      cout << "Added random weights in range [1, " << n << "]" << endl;
+    }
+    
+    // Create vertex array
+    wghVertex<intT>* v = newA(wghVertex<intT>, n);
+    for (intT i = 0; i < n; i++) {
+      v[i].Neighbors = adj + offsets[i];
+      v[i].nghWeights = weights + offsets[i];
+      v[i].degree = offsets[i + 1] - offsets[i];
+    }
+    
+    free(offsets);
+    
+    // Default source and sink
+    intT source = 0;
+    intT sink = (n > 1) ? 1 : 0;
+    
+    cout << "Successfully loaded .adj file with " << n << " nodes, " << m << " edges" << endl;
+    cout << "Using default source=" << source << ", sink=" << sink << endl;
+    
+    return FlowGraph<intT>(wghGraph<intT>(v, n, m, adj, weights), source, sink);
+  }
 };
 
 #endif // _BENCH_GRAPH_IO
