@@ -35,15 +35,14 @@ int bfs_distance(const Graph<>& g, int source, int target) {
     return -1; // No path found
 }
 
-// Compute undirected diameter using BFS from sampled nodes
+// Compute undirected diameter using BFS from a single sampled node
 int compute_undirected_diameter(const Graph<>& g) {
-    int max_diameter = 0;
+    if (g.n == 0) return 0;
     
-    // For large graphs, sample nodes to avoid excessive computation
-    int sample_size = min((int)g.n, 1000);
-    int step = max(1, (int)g.n / sample_size);
+    // For fast approximation, just sample one node (middle node)
+    int start_node = g.n / 2;
     
-    // Create undirected adjacency list for sampled computation
+    // Create undirected adjacency list
     vector<vector<int>> adj(g.n);
     for (size_t u = 0; u < g.n; u++) {
         for (size_t i = g.offsets[u]; i < g.offsets[u + 1]; i++) {
@@ -61,35 +60,29 @@ int compute_undirected_diameter(const Graph<>& g) {
         adj[u].erase(unique(adj[u].begin(), adj[u].end()), adj[u].end());
     }
     
-    // BFS from sampled nodes to find maximum distance
-    for (size_t start = 0; start < g.n; start += step) {
-        vector<int> dist(g.n, -1);
-        queue<int> q;
+    // BFS from single starting node to find maximum distance
+    vector<int> dist(g.n, -1);
+    queue<int> q;
+    
+    dist[start_node] = 0;
+    q.push(start_node);
+    
+    int max_distance = 0;
+    
+    while (!q.empty()) {
+        int u = q.front();
+        q.pop();
         
-        dist[start] = 0;
-        q.push(start);
-        
-        while (!q.empty()) {
-            int u = q.front();
-            q.pop();
-            
-            for (int v : adj[u]) {
-                if (dist[v] == -1) {
-                    dist[v] = dist[u] + 1;
-                    q.push(v);
-                }
-            }
-        }
-        
-        // Find maximum distance from this starting node
-        for (size_t i = 0; i < g.n; i++) {
-            if (dist[i] > max_diameter) {
-                max_diameter = dist[i];
+        for (int v : adj[u]) {
+            if (dist[v] == -1) {
+                dist[v] = dist[u] + 1;
+                q.push(v);
+                max_distance = max(max_distance, dist[v]);
             }
         }
     }
     
-    return max_diameter;
+    return max_distance;
 }
 
 int main(int argc, char* argv[]) {

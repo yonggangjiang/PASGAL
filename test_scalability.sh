@@ -3,10 +3,19 @@
 # PASGAL Comprehensive Scalability Testing Script
 # Tests maxflow algorithms with different thread counts
 # Computes graph properties and measures performance
+#
+# Usage: ./test_scalability.sh [input_directory]
+# If no directory specified, uses "inputs" as default
+
+# Check for input directory parameter
+if [ $# -gt 0 ]; then
+    INPUTS_DIR="$1"
+else
+    INPUTS_DIR="inputs"
+fi
 
 # Configuration
-INPUTS_DIR="/data/graphs"
-RESULTS_FILE="large_scale_results.txt"
+RESULTS_FILE="scalability_results_$(basename "$INPUTS_DIR").txt"
 PBBS_MAXFLOW="src/pbbs/maxFlow"
 PR_SEQ_MAXFLOW="src/PR_seq/maxflow"
 COMPUTE_DIAMETER="./compute_diameter"
@@ -165,11 +174,21 @@ echo "Timeout per run: ${TIMEOUT}s"
 # Find graph files
 echo -e "\n${YELLOW}Looking for graph files in $INPUTS_DIR...${NC}"
 graph_files=()
+
+# Look for files with .adj and .bin extensions
 for ext in adj bin; do
     while IFS= read -r -d '' file; do
         graph_files+=("$file")
     done < <(find "$INPUTS_DIR" -name "*.$ext" -print0 2>/dev/null)
 done
+
+# Also look for files without extensions that could be flow graph format
+while IFS= read -r -d '' file; do
+    # Skip directories and files with extensions
+    if [ -f "$file" ] && [[ "$(basename "$file")" != *.* ]]; then
+        graph_files+=("$file")
+    fi
+done < <(find "$INPUTS_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
 
 if [ ${#graph_files[@]} -eq 0 ]; then
     echo -e "${RED}No graph files found in $INPUTS_DIR${NC}"
@@ -283,19 +302,97 @@ cat "$RESULTS_FILE"
 
 # Generate performance analysis
 echo -e "\n${YELLOW}=== Performance Analysis ===${NC}"
-echo "PBBS Scalability Analysis:"
-echo "------------------------"
+echo "Comprehensive Scalability Analysis"
+echo "=================================="
+printf "%-25s | %8s | %10s | %8s | %12s | %15s | %s\n" "Graph" "Nodes" "Edges" "Density" "PR_seq(s)" "Best_PBBS(s)" "Scalability"
+echo "-------------------------|----------|------------|----------|-------------|----------------|------------"
 
-# Extract and analyze PBBS performance for each graph
+# Extract and analyze performance for each graph
 for graph in "${graph_files[@]}"; do
     graph_name=$(basename "$graph")
     line=$(grep "^$graph_name" "$RESULTS_FILE")
     if [ -n "$line" ]; then
-        echo "Graph: $graph_name"
+        # Parse graph properties
+        N=$(echo "$line" | cut -d'|' -f2 | tr -d ' ')
+        M=$(echo "$line" | cut -d'|' -f3 | tr -d ' ')
+        density=$(echo "$line" | cut -d'|' -f4 | tr -d ' ')
+        
+        # Parse PR_seq results
+        pr_seq_data=$(echo "$line" | cut -d'|' -f8 | tr -d ' ')
+        pr_seq_time=$(echo "$pr_seq_data" | cut -d':' -f2)
+        
+        # Parse PBBS results to find best time
         pbbs_data=$(echo "$line" | cut -d'|' -f7 | tr -d ' ')
+        IFS=';' read -ra PBBS_RESULTS <<< "$pbbs_data"
+        
+        best_pbbs_time="N/A"
+        best_threads="N/A"
+        speedup_1_to_best="N/A"
+        
+        # Find single-thread time and best time
+        single_thread_time=""
+        for result in "${PBBS_RESULTS[@]}"; do
+            threads=$(echo "$result" | cut -d':' -f1)
+            time=$(echo "$result" | cut -d':' -f3)
+            
+            if [ "$threads" = "1" ]; then
+                single_thread_time="$time"
+            fi
+            
+            if [ "$time" != "ERROR" ] && [ "$time" != "TIMEOUT" ] && [ -n "$time" ]; then
+                if [ "$best_pbbs_time" = "N/A" ] || [ $(echo "$time < $best_pbbs_time" | bc -l 2>/dev/null || echo 0) -eq 1 ]; then
+                    best_pbbs_time="$time"
+                    best_threads="$threads"
+                fi
+            fi
+        done
+        
+        # Calculate speedup from 1 thread to best
+        if [ -n "$single_thread_time" ] && [ "$single_thread_time" != "0.00" ] && [ "$best_pbbs_time" != "N/A" ] && [ "$best_pbbs_time" != "0.00" ]; then
+            speedup_1_to_best=$(echo "scale=2; $single_thread_time / $best_pbbs_time" | bc -l 2>/dev/null || echo "N/A")
+        fi
+        
+        # Format scalability info
+        if [ "$speedup_1_to_best" != "N/A" ] && [ "$best_threads" != "N/A" ]; then
+            scalability="${speedup_1_to_best}x@${best_threads}T"
+        else
+            scalability="N/A"
+        fi
+        
+        # Truncate graph name if too long
+        short_name=$(echo "$graph_name" | cut -c1-24)
+        
+        printf "%-25s | %8s | %10s | %8s | %12s | %15s | %s\n" \
+            "$short_name" "$N" "$M" "$density" "$pr_seq_time" "$best_pbbs_time" "$scalability"
+    fi
+done
+
+echo ""
+echo "Detailed Thread Scalability:"
+echo "----------------------------"
+
+# Detailed per-graph analysis
+for graph in "${graph_files[@]}"; do
+    graph_name=$(basename "$graph")
+    line=$(grep "^$graph_name" "$RESULTS_FILE")
+    if [ -n "$line" ]; then
+        echo ""
+        echo "Graph: $graph_name"
+        
+        # Parse graph info
+        N=$(echo "$line" | cut -d'|' -f2 | tr -d ' ')
+        M=$(echo "$line" | cut -d'|' -f3 | tr -d ' ')
+        density=$(echo "$line" | cut -d'|' -f4 | tr -d ' ')
+        pr_seq_data=$(echo "$line" | cut -d'|' -f8 | tr -d ' ')
+        pr_seq_flow=$(echo "$pr_seq_data" | cut -d':' -f1)
+        pr_seq_time=$(echo "$pr_seq_data" | cut -d':' -f2)
+        
+        echo "  Properties: N=$N, M=$M, Density=$density"
+        echo "  PR_seq: Flow=$pr_seq_flow, Time=${pr_seq_time}s"
         
         # Parse thread scalability
-        echo "  Thread Scalability:"
+        pbbs_data=$(echo "$line" | cut -d'|' -f7 | tr -d ' ')
+        echo "  PBBS Thread Scalability:"
         echo "    Threads | Flow | Time(s) | Speedup | Efficiency(%)"
         echo "    --------|------|---------|---------|-------------"
         
@@ -317,8 +414,10 @@ for graph in "${graph_files[@]}"; do
             
             printf "    %7s | %4s | %7s | %7s | %11s\n" "$threads" "$flow" "$time" "$speedup" "$efficiency"
         done
-        echo ""
     fi
 done
 
+echo ""
 echo -e "${GREEN}Testing completed successfully!${NC}"
+echo -e "${BLUE}Input directory: $INPUTS_DIR${NC}"
+echo -e "${BLUE}Results saved to: $RESULTS_FILE${NC}"

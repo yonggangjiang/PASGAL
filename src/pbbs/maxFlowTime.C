@@ -23,6 +23,7 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <cstdlib>
 #ifdef CILKP
 #include <cilk/cilk_api.h>
 #endif
@@ -57,9 +58,21 @@ void timeMaxFlow(FlowGraph<intT> g, int rounds, char* outFile) {
     }
 
     oldNWorkers = getWorkers();
-    cout << "Temporarily switching from " << oldNWorkers
-            << " to 32 threads" << endl;
-    setWorkers(32);
+    
+    // Check if OMP_NUM_THREADS is set, otherwise use current workers
+    int targetThreads = oldNWorkers;
+    char* envThreads = getenv("OMP_NUM_THREADS");
+    if (envThreads != nullptr) {
+      targetThreads = atoi(envThreads);
+    }
+    
+    if (targetThreads != oldNWorkers) {
+      cout << "Setting threads to " << targetThreads << " (from environment)" << endl;
+      setWorkers(targetThreads);
+    } else {
+      cout << "Using " << oldNWorkers << " threads" << endl;
+    }
+    
     maxFlow(gn);
   }
   if (outFile) {
