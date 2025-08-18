@@ -13,6 +13,7 @@ inputs/
 *.tsv
 *.txt
 *.py
+*.log
 perf*
 
 # Prerequisites
@@ -45,7 +46,6 @@ perf*
 
 # Executables
 *.exe
-*.out
 *.app
 
 soc-LiveJournal1.bin

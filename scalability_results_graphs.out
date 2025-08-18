@@ -1,0 +1,6 @@
+# PASGAL Comprehensive Scalability Testing Results
+# Generated on: Sun Aug 17 08:08:41 PM PDT 2025
+# Format: Graph | Nodes | Edges | Density | Src_Sink_Dist | Undirected_Diam | PBBS_Results | PR_Seq_Results | Speedup_Analysis
+# PBBS_Results format: threads:flow:avg_time;...
+# Speedup_Analysis format: threads:speedup:efficiency;...
+

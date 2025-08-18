@@ -15,7 +15,7 @@ else
 fi
 
 # Configuration
-RESULTS_FILE="scalability_results_$(basename "$INPUTS_DIR").txt"
+RESULTS_FILE="scalability_results_$(basename "$INPUTS_DIR").out"
 PBBS_MAXFLOW="src/pbbs/maxFlow"
 PR_SEQ_MAXFLOW="src/PR_seq/maxflow"
 COMPUTE_DIAMETER="./compute_diameter"
@@ -33,8 +33,8 @@ NC='\033[0m' # No Color
 # Function to extract timing from pbbs output
 extract_pbbs_time() {
     local output="$1"
-    # Look for the last "total time" entry (main algorithm time)
-    echo "$output" | grep "total time" | tail -1 | grep -o "[0-9.]\+" | head -1
+    # Look for "PBBS-time:" entry (main algorithm time)
+    echo "$output" | grep "PBBS-time:" | grep -o "[0-9.]\+" | head -1
 }
 
 # Function to extract flow value from pbbs output
@@ -304,8 +304,16 @@ cat "$RESULTS_FILE"
 echo -e "\n${YELLOW}=== Performance Analysis ===${NC}"
 echo "Comprehensive Scalability Analysis"
 echo "=================================="
-printf "%-25s | %8s | %10s | %8s | %12s | %15s | %s\n" "Graph" "Nodes" "Edges" "Density" "PR_seq(s)" "Best_PBBS(s)" "Scalability"
-echo "-------------------------|----------|------------|----------|-------------|----------------|------------"
+printf "%-25s | %8s | %10s | %8s | %8s | %10s | %12s | %15s | %s\n" "Graph" "Nodes" "Edges" "Density" "S-T_Dist" "Diameter" "PR_seq(s)" "Best_PBBS(s)" "Scalability"
+echo "-------------------------|----------|------------|----------|----------|------------|-------------|----------------|------------"
+
+# Also write performance analysis to file
+echo "" >> "$RESULTS_FILE"
+echo "=== Performance Analysis ===" >> "$RESULTS_FILE"
+echo "Comprehensive Scalability Analysis" >> "$RESULTS_FILE"
+echo "==================================" >> "$RESULTS_FILE"
+printf "%-25s | %8s | %10s | %8s | %8s | %10s | %12s | %15s | %s\n" "Graph" "Nodes" "Edges" "Density" "S-T_Dist" "Diameter" "PR_seq(s)" "Best_PBBS(s)" "Scalability" >> "$RESULTS_FILE"
+echo "-------------------------|----------|------------|----------|----------|------------|-------------|----------------|------------" >> "$RESULTS_FILE"
 
 # Extract and analyze performance for each graph
 for graph in "${graph_files[@]}"; do
@@ -316,6 +324,8 @@ for graph in "${graph_files[@]}"; do
         N=$(echo "$line" | cut -d'|' -f2 | tr -d ' ')
         M=$(echo "$line" | cut -d'|' -f3 | tr -d ' ')
         density=$(echo "$line" | cut -d'|' -f4 | tr -d ' ')
+        src_sink_dist=$(echo "$line" | cut -d'|' -f5 | tr -d ' ')
+        diameter=$(echo "$line" | cut -d'|' -f6 | tr -d ' ')
         
         # Parse PR_seq results
         pr_seq_data=$(echo "$line" | cut -d'|' -f8 | tr -d ' ')
@@ -362,14 +372,23 @@ for graph in "${graph_files[@]}"; do
         # Truncate graph name if too long
         short_name=$(echo "$graph_name" | cut -c1-24)
         
-        printf "%-25s | %8s | %10s | %8s | %12s | %15s | %s\n" \
-            "$short_name" "$N" "$M" "$density" "$pr_seq_time" "$best_pbbs_time" "$scalability"
+        printf "%-25s | %8s | %10s | %8s | %8s | %10s | %12s | %15s | %s\n" \
+            "$short_name" "$N" "$M" "$density" "$src_sink_dist" "$diameter" "$pr_seq_time" "$best_pbbs_time" "$scalability"
+        
+        # Also write to file
+        printf "%-25s | %8s | %10s | %8s | %8s | %10s | %12s | %15s | %s\n" \
+            "$short_name" "$N" "$M" "$density" "$src_sink_dist" "$diameter" "$pr_seq_time" "$best_pbbs_time" "$scalability" >> "$RESULTS_FILE"
     fi
 done
 
 echo ""
 echo "Detailed Thread Scalability:"
 echo "----------------------------"
+
+# Also write to file
+echo "" >> "$RESULTS_FILE"
+echo "Detailed Thread Scalability:" >> "$RESULTS_FILE"
+echo "----------------------------" >> "$RESULTS_FILE"
 
 # Detailed per-graph analysis
 for graph in "${graph_files[@]}"; do
@@ -379,22 +398,37 @@ for graph in "${graph_files[@]}"; do
         echo ""
         echo "Graph: $graph_name"
         
+        # Also write to file
+        echo "" >> "$RESULTS_FILE"
+        echo "Graph: $graph_name" >> "$RESULTS_FILE"
+        
         # Parse graph info
         N=$(echo "$line" | cut -d'|' -f2 | tr -d ' ')
         M=$(echo "$line" | cut -d'|' -f3 | tr -d ' ')
         density=$(echo "$line" | cut -d'|' -f4 | tr -d ' ')
+        src_sink_dist=$(echo "$line" | cut -d'|' -f5 | tr -d ' ')
+        diameter=$(echo "$line" | cut -d'|' -f6 | tr -d ' ')
         pr_seq_data=$(echo "$line" | cut -d'|' -f8 | tr -d ' ')
         pr_seq_flow=$(echo "$pr_seq_data" | cut -d':' -f1)
         pr_seq_time=$(echo "$pr_seq_data" | cut -d':' -f2)
         
-        echo "  Properties: N=$N, M=$M, Density=$density"
+        echo "  Properties: N=$N, M=$M, Density=$density, S-T_Dist=$src_sink_dist, Diameter=$diameter"
         echo "  PR_seq: Flow=$pr_seq_flow, Time=${pr_seq_time}s"
+        
+        # Also write to file
+        echo "  Properties: N=$N, M=$M, Density=$density, S-T_Dist=$src_sink_dist, Diameter=$diameter" >> "$RESULTS_FILE"
+        echo "  PR_seq: Flow=$pr_seq_flow, Time=${pr_seq_time}s" >> "$RESULTS_FILE"
         
         # Parse thread scalability
         pbbs_data=$(echo "$line" | cut -d'|' -f7 | tr -d ' ')
         echo "  PBBS Thread Scalability:"
         echo "    Threads | Flow | Time(s) | Speedup | Efficiency(%)"
         echo "    --------|------|---------|---------|-------------"
+        
+        # Also write to file
+        echo "  PBBS Thread Scalability:" >> "$RESULTS_FILE"
+        echo "    Threads | Flow | Time(s) | Speedup | Efficiency(%)" >> "$RESULTS_FILE"
+        echo "    --------|------|---------|---------|-------------" >> "$RESULTS_FILE"
         
         IFS=';' read -ra RESULTS <<< "$pbbs_data"
         IFS=';' read -ra SPEEDUPS <<< "$(echo "$line" | cut -d'|' -f9 | tr -d ' ')"
@@ -413,6 +447,9 @@ for graph in "${graph_files[@]}"; do
             fi
             
             printf "    %7s | %4s | %7s | %7s | %11s\n" "$threads" "$flow" "$time" "$speedup" "$efficiency"
+            
+            # Also write to file
+            printf "    %7s | %4s | %7s | %7s | %11s\n" "$threads" "$flow" "$time" "$speedup" "$efficiency" >> "$RESULTS_FILE"
         done
     fi
 done

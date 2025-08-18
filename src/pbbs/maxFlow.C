@@ -1237,7 +1237,9 @@ intT maxFlow(FlowGraph<intT>& g) {
   t.stop(); cout << "t6 = " << t.total() << endl; t.clear(); t.start();
   timeInit.stop();
   cout << "init time: " << timeInit.total() << endl;
+  beforeHook();
   run();
+  afterHook();
   timer timeDeinit; timeDeinit.start();
   deinit();
 
