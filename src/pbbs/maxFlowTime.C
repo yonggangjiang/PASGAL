@@ -49,7 +49,7 @@ void afterHook() {
   nextTimeN();
 }
 
-void timeMaxFlow(FlowGraph<intT> g, int rounds, char* outFile, int threads) {
+void timeMaxFlow(FlowGraph<intT> g, int rounds, char* outFile) {
   FlowGraph<intT> gn = g.copy();
   for (int i = 0; i < rounds; i++) {
     if (i > 0) {
@@ -58,32 +58,9 @@ void timeMaxFlow(FlowGraph<intT> g, int rounds, char* outFile, int threads) {
     }
 
     oldNWorkers = getWorkers();
-    
-    // Determine target thread count
-    int targetThreads = oldNWorkers;
-    if (threads > 0) {
-      // Use command-line specified threads
-      targetThreads = threads;
-    } else {
-      // Check if OMP_NUM_THREADS is set, otherwise use current workers
-      char* envThreads = getenv("OMP_NUM_THREADS");
-      if (envThreads != nullptr) {
-        targetThreads = atoi(envThreads);
-      }
-    }
-    
-    if (targetThreads != oldNWorkers) {
-      cout << "Setting threads to " << targetThreads;
-      if (threads > 0) {
-        cout << " (from -t parameter)" << endl;
-      } else {
-        cout << " (from environment)" << endl;
-      }
-      setWorkers(targetThreads);
-    } else {
-      cout << "Using " << oldNWorkers << " threads" << endl;
-    }
-    
+    cout << "Temporarily switching from " << oldNWorkers
+            << " to 32 threads" << endl;
+    setWorkers(32);
     maxFlow(gn);
   }
   if (outFile) {
@@ -100,7 +77,6 @@ int main(int argc, char* argv[]) {
   char* iFile = P.getArgument(0);
   char* oFile = P.getOptionValue("-o");
   int rounds = P.getOptionIntValue("-r",1);
-  int threads = P.getOptionIntValue("-t",0); // 0 means use default/environment
   timer t;
   t.start();
   

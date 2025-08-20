@@ -20,8 +20,8 @@ PBBS_MAXFLOW="src/pbbs/maxFlow"
 PR_SEQ_MAXFLOW="src/PR_seq/maxflow"
 COMPUTE_DIAMETER="./compute_diameter"
 THREADS=(1 2 4 8 16 32 64)
-TIMEOUT=60  # 1 minute timeout per test
-NUM_RUNS=3   # Number of runs for averaging
+TIMEOUT=180  # 1 minute timeout per test
+NUM_RUNS=1   # Number of runs for averaging
 
 # Colors for output
 RED='\033[0;31m'

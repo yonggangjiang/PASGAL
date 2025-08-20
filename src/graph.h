@@ -166,8 +166,8 @@ class Graph {
       weighted = false;
       // Add random weights if EdgeTy is not Empty
       if constexpr (!std::is_same_v<EdgeTy, Empty>) {
-        generate_random_weight(1, n);
-        std::cout << "Added random weights in range [1, " << n << "]" << std::endl;
+        generate_all_random_weights();
+        std::cout << "Added random weights in range [1, 10000]" << std::endl;
       }
     }
     // Set default source and sink for non-flow graphs
@@ -217,8 +217,8 @@ class Graph {
     // Binary format doesn't include weights, so add random weights if EdgeTy is not Empty
     weighted = false;
     if constexpr (!std::is_same_v<EdgeTy, Empty>) {
-      generate_random_weight(1, n);
-      std::cout << "Added random weights in range [1, " << n << "]" << std::endl;
+      generate_all_random_weights();
+      std::cout << "Added random weights in range [1, 10000]" << std::endl;
     }
     
     // Set default source and sink for non-flow graphs
@@ -258,8 +258,8 @@ class Graph {
     // Binary format doesn't include weights, so add random weights if EdgeTy is not Empty
     weighted = false;
     if constexpr (!std::is_same_v<EdgeTy, Empty>) {
-      generate_random_weight(1, n);
-      std::cout << "Added random weights in range [1, " << n << "]" << std::endl;
+      generate_all_random_weights();
+      std::cout << "Added random weights in range [1, 10000]" << std::endl;
     }
     
     // Set default source and sink for non-flow graphs
@@ -477,9 +477,20 @@ class Graph {
     ofs.close();
   }
 
-  // Generates integral edge weights in range [l, r) based on edge endpoints
+  // Generates deterministic edge weight based on edge ID
+  // Returns weight in range [1, 10000] determined by edge ID
+  static uint32_t generate_random_weight(EdgeId edge_id) {
+    // Use hash of edge ID to generate deterministic weight
+    uint32_t hash_val = edge_id * 2654435761U;
+    hash_val ^= hash_val >> 16;
+    hash_val *= 2654435761U;
+    hash_val ^= hash_val >> 16;
+    return (hash_val % 10000) + 1;
+  }
+
+  // Generates integral edge weights for all edges in the graph
   // This ensures the same graph structure always produces the same weights
-  void generate_random_weight(uint32_t l, uint32_t r) {
+  void generate_all_random_weights() {
     if constexpr (std::is_same_v<EdgeTy, Empty>) {
       std::cerr << "Error: Graph instance does not have a edge weight field"
                 << std::endl;
@@ -492,16 +503,10 @@ class Graph {
     }
     
     std::cout << "Generating deterministic weights for " << m << " edges..." << std::flush;
-    uint32_t range = r - l + 1;
     
-    // Generate weights based on edge endpoints for deterministic results
-    parlay::parallel_for(0, n, [&](NodeId u) {
-      parlay::parallel_for(offsets[u], offsets[u + 1], [&](EdgeId i) {
-        NodeId v = edges[i].v;
-        // Use hash of both endpoints to generate deterministic weight
-        uint32_t hash_val = (u * 2654435761U) ^ (v * 2654435761U) ^ ((u + v) * 2654435761U);
-        edges[i].w = (hash_val % range) + l;
-      });
+    // Generate weights based on edge IDs for deterministic results
+    parlay::parallel_for(0, m, [&](EdgeId i) {
+      edges[i].w = generate_random_weight(i);
     });
     
     std::cout << " done" << std::endl;

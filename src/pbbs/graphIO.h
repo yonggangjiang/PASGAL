@@ -35,6 +35,14 @@
 
 using namespace benchIO;
 
+static uint32_t generate_random_weight(uint64_t edge_id) {
+  // Use hash of edge ID to generate deterministic weight
+  uint32_t hash_val = edge_id * 2654435761U;
+  hash_val ^= hash_val >> 16;
+  hash_val *= 2654435761U;
+  hash_val ^= hash_val >> 16;
+  return (hash_val % 10000) + 1;
+}
 template <class intT>
 int xToStringLen(edge<intT> a) { 
   return xToStringLen(a.u) + xToStringLen(a.v) + 1;
@@ -403,14 +411,8 @@ namespace benchIO {
       
       for (intT i = 0; i < m; ++i) {
         adj[i] = static_cast<intT>(neighbors_raw[i]);
-        // Generate deterministic weight based on edge endpoints
-        // Find which vertex this edge belongs to
-        intT u = 0;
-        while (u < n && offsets_raw[u + 1] <= i) u++;
-        intT v_id = adj[i];
-        // Generate deterministic weight using hash of both endpoints
-        uint32_t hash_val = (u * 2654435761U) ^ (v_id * 2654435761U) ^ ((u + v_id) * 2654435761U);
-        weights[i] = (hash_val % n) + 1;
+        // Generate deterministic weight based on edge ID
+        weights[i] = generate_random_weight(i);
       }
       
       free(offsets_raw);
@@ -421,7 +423,7 @@ namespace benchIO {
       intT T = (n > 1) ? 1 : 0;
       
       cout << "Read binary graph with " << n << " nodes, " << m << " edges" << endl;
-      cout << "Added random weights in range [1, " << n << "]" << endl;
+      cout << "Added random weights in range [1, 10000]" << endl;
       cout << "Using default source=" << S << ", sink=" << T << endl;
       
       return FlowGraph<intT>(wghGraph<intT>(v, n, m, adj, weights), S, T);
@@ -582,10 +584,8 @@ namespace benchIO {
       // Copy neighbors and generate random weights
       for (intT j = 0; j < degree; j++) {
         adj[start + j] = neighbors_raw[start + j];
-        // Generate deterministic weight based on edge endpoints
-        intT v_id = neighbors_raw[start + j];
-        uint32_t hash_val = (i * 2654435761U) ^ (v_id * 2654435761U) ^ ((i + v_id) * 2654435761U);
-        weights[start + j] = (hash_val % n) + 1;
+        // Generate deterministic weight based on edge ID
+        weights[start + j] = generate_random_weight(start + j);
       }
     }
     
@@ -654,6 +654,7 @@ namespace benchIO {
     for (intT i = 0; i < m; i++) {
       adj[i] = atol(W.Strings[i + n + 3]);
     }
+    cout << "finished reading" << endl;
     
     // Read or generate weights
     intT* weights = newA(intT, m);
@@ -666,15 +667,10 @@ namespace benchIO {
     } else {
       // Generate deterministic weights
       for (intT i = 0; i < m; i++) {
-        // Find which vertex this edge belongs to
-        intT u = 0;
-        while (u < n && offsets[u + 1] <= i) u++;
-        intT v = adj[i];
-        // Generate deterministic weight using hash of both endpoints
-        uint32_t hash_val = (u * 2654435761U) ^ (v * 2654435761U) ^ ((u + v) * 2654435761U);
-        weights[i] = (hash_val % n) + 1;
+        // Generate deterministic weight based on edge ID
+        weights[i] = generate_random_weight(i);
       }
-      cout << "Added random weights in range [1, " << n << "]" << endl;
+      cout << "Added random weights in range [1, 10000]" << endl;
     }
     
     // Create vertex array
