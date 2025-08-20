@@ -108,7 +108,7 @@ Graph generate_reverse_edges(const Graph &G) {
 }
 template <class Algo, class Graph, class NodeId = typename Graph::NodeId>
 void run(Algo &algo, [[maybe_unused]] Graph &G, NodeId s, NodeId t) {
-  cout << "source " << s << ", target " << t << endl;
+  cout << "source " << s << ", sink " << t << endl;
   double total_time = 0;
   FlowTy max_flow;
   parlay::sequence<FlowTy> flows = parlay::tabulate(G.m, [&](EdgeId i) {
@@ -127,9 +127,9 @@ void run(Algo &algo, [[maybe_unused]] Graph &G, NodeId s, NodeId t) {
       cout << "Round " << i << ": " << tm.total_time() << endl;
       total_time += tm.total_time();
     }
+    cout << "Max flow: " << max_flow << endl;
   }
   double average_time = total_time / NUM_ROUND;
-  cout << "Max flow: " << max_flow << endl;
   cout << "Average time: " << average_time << endl;
 
   ofstream ofs("dinic.tsv", ios_base::app);
@@ -159,7 +159,7 @@ int main(int argc, char *argv[]) {
   char const *input_path = nullptr;
   bool symmetrized = false;
   uint32_t source = UINT_MAX;
-  uint32_t target = UINT_MAX;
+  uint32_t sink = UINT_MAX;
   while ((c = getopt(argc, argv, "i:sr:t:")) != -1) {
     switch (c) {
       case 'i':
@@ -172,7 +172,7 @@ int main(int argc, char *argv[]) {
         source = atol(optarg);
         break;
       case 't':
-        target = atol(optarg);
+        sink = atol(optarg);
         break;
       default:
         std::cerr << "Error: Unknown option " << optopt << std::endl;
@@ -201,10 +201,10 @@ int main(int argc, char *argv[]) {
        << ", num_src=" << NUM_SRC << ", num_round=" << NUM_ROUND << endl;
 
   Dinic solver(G);
-  if (source == UINT_MAX || target == UINT_MAX) {
+  if (source == UINT_MAX || sink == UINT_MAX) {
     run(solver, G);
   } else {
-    run(solver, G, source, target);
+    run(solver, G, source, sink);
   }
   return 0;
 }
