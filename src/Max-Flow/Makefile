@@ -38,10 +38,13 @@ ifdef FLOAT
 CPPFLAGS += -DFLOAT
 endif
 
-all: dinic
+all: dinic push-relabel
 
 dinic:	dinic.cpp dinic.h
 	$(CC) $(CPPFLAGS) $(INCLUDE_PATH) dinic.cpp -o dinic
 
+push-relabel:	push-relabel.cpp push-relabel.h
+	$(CC) $(CPPFLAGS) $(INCLUDE_PATH) push-relabel.cpp -o push-relabel
+
 clean:
-	rm dinic
+	rm dinic push-relabel
