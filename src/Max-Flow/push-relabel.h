@@ -8,6 +8,8 @@
 using namespace std;
 using namespace parlay;
 
+namespace Basic {
+
 template <class Graph>
 class PushRelabel {
   using NodeId = typename Graph::NodeId;
@@ -134,3 +136,5 @@ class PushRelabel {
     return excess[sink];
   }
 };
+
+} // namespace Basic

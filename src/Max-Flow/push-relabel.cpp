@@ -1,9 +1,15 @@
 #include "push-relabel.h"
+#include "PRSyncNondetWin.h"
 
 #include <queue>
 #include <type_traits>
+#include <string>
 
 #include "graph.h"
+
+using namespace std;
+using namespace parlay;
+using namespace Basic;
 
 typedef uint32_t NodeId;
 typedef uint64_t EdgeId;
@@ -149,10 +155,11 @@ void run(Algo &algo, Graph &G) {
 
 int main(int argc, char *argv[]) {
   if (argc == 1) {
-    cout << "Usage: " << argv[0] << " [-i input_file] [-s]\n"
+    cout << "Usage: " << argv[0] << " [-i input_file] [-s] [-a algorithm]\n"
          << "Options:\n"
          << "\t-i,\tinput file path\n"
-         << "\t-s,\tsymmetrized input graph\n";
+         << "\t-s,\tsymmetrized input graph\n"
+         << "\t-a,\talgorithm (default: basic, options: basic, nondet)\n";
     return 0;
   }
   char c;
@@ -160,7 +167,8 @@ int main(int argc, char *argv[]) {
   bool symmetrized = false;
   uint32_t source = UINT_MAX;
   uint32_t target = UINT_MAX;
-  while ((c = getopt(argc, argv, "i:sr:t:")) != -1) {
+  string algorithm = "basic";
+  while ((c = getopt(argc, argv, "i:sr:t:a:")) != -1) {
     switch (c) {
       case 'i':
         input_path = optarg;
@@ -173,6 +181,9 @@ int main(int argc, char *argv[]) {
         break;
       case 't':
         target = atol(optarg);
+        break;
+      case 'a':
+        algorithm = optarg;
         break;
       default:
         std::cerr << "Error: Unknown option " << optopt << std::endl;
@@ -200,11 +211,27 @@ int main(int argc, char *argv[]) {
   cout << "Running on " << input_path << ": |V|=" << G.n << ", |E|=" << G.m
        << ", num_src=" << NUM_SRC << ", num_round=" << NUM_ROUND << endl;
 
-  PushRelabel solver(G);
-  if (source == UINT_MAX || target == UINT_MAX) {
-    run(solver, G);
+  cout << "Using algorithm: " << algorithm << endl;
+  
+  using GraphType = Graph<NodeId, EdgeId, FlowEdge<FlowTy>>;
+  
+  if (algorithm == "nondet") {
+    auto solver = PRSyncNondetWin<GraphType>(G);
+    if (source == UINT_MAX || target == UINT_MAX) {
+      run(solver, G);
+    } else {
+      run(solver, G, source, target);
+    }
+  } else if (algorithm == "basic") {
+    auto solver = PushRelabel<GraphType>(G);
+    if (source == UINT_MAX || target == UINT_MAX) {
+      run(solver, G);
+    } else {
+      run(solver, G, source, target);
+    }
   } else {
-    run(solver, G, source, target);
+    std::cerr << "Error: Unknown algorithm '" << algorithm << "'. Available: basic, nondet" << std::endl;
+    return 1;
   }
   return 0;
 }
