@@ -167,7 +167,7 @@ int main(int argc, char *argv[]) {
   bool symmetrized = false;
   uint32_t source = UINT_MAX;
   uint32_t target = UINT_MAX;
-  string algorithm = "basic";
+  string algorithm = "nondet";
   while ((c = getopt(argc, argv, "i:sr:t:a:")) != -1) {
     switch (c) {
       case 'i':

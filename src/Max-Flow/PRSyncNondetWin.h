@@ -33,6 +33,8 @@ class PRSyncNondetWin {
   size_t work_counter;
   size_t work_threshold;
   bool first_pulse;
+  sequence<NodeId> working_set;
+  size_t working_set_size;
 
  public:
   PRSyncNondetWin() = delete;
@@ -51,8 +53,9 @@ class PRSyncNondetWin {
     work_threshold = 4 * n; // Typical threshold
     work_counter = 0;
     first_pulse = true;
+    working_set = sequence<NodeId>::uninitialized(G.n);
+    working_set_size = 0;
   }
-
   void add_to_bag(NodeId u) {
     if (u != source && u != sink &&
         compare_and_swap(&in_frontier[u], false, true)) {
@@ -60,39 +63,57 @@ class PRSyncNondetWin {
     }
   }
 
-  // Global relabeling using BFS from sink
+  // Global Relabel using reverse BFS from sink
   void global_relabel() {
+    // Reset all heights to n (unreachable)
     parallel_for(0, G.n, [&](size_t i) {
-      heights[i] = n;
+      if (i != sink) {
+        heights[i] = n;
+      }
     });
     
-    queue<NodeId> q;
-    heights[sink] = 0;
-    q.push(sink);
+    // Start BFS from sink
+    sequence<NodeId> current_level(G.n);
+    sequence<NodeId> next_level(G.n);
+    size_t current_size = 0;
+    size_t next_size = 0;
     
-    while (!q.empty()) {
-      NodeId u = q.front();
-      q.pop();
+    heights[sink] = 0;
+    current_level[current_size++] = sink;
+    
+    int distance = 0;
+    while (current_size > 0) {
+      next_size = 0;
       
-      for (size_t i = G.offsets[u]; i < G.offsets[u + 1]; i++) {
-        auto& e = G.edges[i];
-        NodeId v = e.v;
-        Edge& rev_e = G.edges[e.rev];
+      // Process all nodes at current distance
+      for (size_t i = 0; i < current_size; i++) {
+        NodeId u = current_level[i];
         
-        // If reverse edge has capacity and v is not labeled
-        if (rev_e.w > 0 && heights[v] == n) {
-          heights[v] = heights[u] + 1;
-          q.push(v);
+        // Look at incoming edges (reverse edges in residual graph)
+        for (size_t j = G.offsets[u]; j < G.offsets[u + 1]; j++) {
+          auto& e = G.edges[j];
+          NodeId v = e.v;
+          
+          // Check if reverse edge has capacity and v is not yet labeled
+          auto& rev_e = G.edges[e.rev];
+          if (rev_e.w > 0 && heights[v] == n && v != source) {
+            heights[v] = distance + 1;
+            next_level[next_size++] = v;
+          }
         }
       }
+      
+      // Swap levels
+      for (size_t i = 0; i < next_size; i++) {
+        current_level[i] = next_level[i];
+      }
+      current_size = next_size;
+      distance++;
     }
     
-    work_counter = 0; // Reset work counter after global relabel
-  }
-
-  // Test and set for discovered vertices
-  bool test_and_set_discovered(NodeId u) {
-    return compare_and_swap(&is_discovered[u], false, true);
+    // Reset work counter and first pulse flag
+    work_counter = 0;
+    first_pulse = false;
   }
 
   void init(NodeId s) {
@@ -103,83 +124,35 @@ class PRSyncNondetWin {
       is_discovered[i] = false;
       discovered_vertices[i].clear();
     });
+    
     heights[s] = n;
-    parallel_for(G.offsets[s], G.offsets[s + 1], [&](size_t i) {
+    working_set_size = 0;
+    
+    // Saturate source-adjacent edges
+    for (size_t i = G.offsets[s]; i < G.offsets[s + 1]; i++) {
       auto& e = G.edges[i];
-      if (e.w) {
+      if (e.w > 0) {
         G.edges[e.rev].w += e.w;
-        // Assume no duplicate edges. Otherwise it needs atomic addition
         excess[e.v] += e.w;
         e.w = 0;
-        add_to_bag(e.v);
-      }
-    });
-  }
-
-  // Winning condition for conflict resolution
-  bool wins(NodeId v, NodeId w) {
-    return (heights[v] == heights[w] + 1) || 
-           (heights[v] < heights[w] - 1) || 
-           (heights[v] == heights[w] && v < w);
-  }
-
-  // Discharge function implementing the pseudocode logic
-  void discharge_vertex(NodeId v) {
-    discovered_vertices[v].clear();
-    new_heights[v] = heights[v];
-    FlowTy e = excess[v]; // local copy
-    
-    while (e > 0) {
-      int new_label = n;
-      bool skipped = false;
-      
-      for (size_t i = G.offsets[v]; i < G.offsets[v + 1]; i++) {
-        auto& fwd_e = G.edges[i];
-        NodeId w = fwd_e.v;
         
-        if (e == 0) break; // vertex is already discharged completely
-        
-        bool admissible = (new_heights[v] == heights[w] + 1);
-        
-        if (excess[w] > 0) { // is the edge shared between two active vertices?
-          bool win = wins(v, w);
-          if (admissible && !win) {
-            skipped = true;
-            continue; // skip to next residual edge
-          }
+        // Add to working set if not source or sink
+        if (e.v != source && e.v != sink && excess[e.v] > 0) {
+          working_set[working_set_size++] = e.v;
         }
-        
-        if (admissible && fwd_e.w > 0) { // edge is admissible
-          FlowTy delta = min(fwd_e.w, e);
-          fwd_e.w -= delta;
-          G.edges[fwd_e.rev].w += delta;
-          e -= delta;
-          write_add(&added_excess[w], delta); // atomic fetch-and-add
-          
-          if (w != sink && test_and_set_discovered(w)) {
-            discovered_vertices[v].push_back(w);
-          }
-        }
-        
-        if (fwd_e.w > 0 && heights[w] >= new_heights[v]) {
-          new_label = min(new_label, heights[w] + 1);
-        }
-        
-        if (e == 0 || skipped) {
-          break;
-        }
-      }
-      
-      new_heights[v] = new_label;
-      if (new_heights[v] == n) {
-        break;
       }
     }
-    
-    added_excess[v] = e - excess[v];
-    if (excess[v] > 0 && test_and_set_discovered(v)) {
-      discovered_vertices[v].push_back(v);
+  }
+
+  void relabel(NodeId u) {
+    heights[u] = std::numeric_limits<int>::max();
+    for (size_t i = G.offsets[u]; i < G.offsets[u + 1]; i++) {
+      auto& e = G.edges[i];
+      if (e.w > 0) {
+        heights[u] = min(heights[u], heights[e.v]);
+      }
     }
+    heights[u]++;
   }
 
   FlowTy max_flow(NodeId s, NodeId t) {
@@ -188,74 +161,136 @@ class PRSyncNondetWin {
     if (source == sink) {
       return 0;
     }
+    
     init(source);
     first_pulse = true;
     
     while (true) {
-      // Check conditions for global relabel (lines 5-8)
-      size_t frontier_size = bag.pack_into(frontier);
-      if (first_pulse || work_counter > work_threshold || frontier_size == 0) {
+      // Check conditions for global relabel
+      if (first_pulse || work_counter >= work_threshold || working_set_size == 0) {
         global_relabel();
-        first_pulse = false;
         
-        // Filter working set: keep only vertices with d(v) < n (line 9)
-        sequence<NodeId> filtered_frontier = 
-          parlay::filter(parlay::make_slice(frontier.data(), frontier.data() + frontier_size),
-                        [&](NodeId v) { return heights[v] < n; });
-        
-        parallel_for(0, frontier_size, [&](size_t i) { 
-          in_frontier[frontier[i]] = false; 
-        });
-        
-        // Update frontier with filtered vertices
-        frontier_size = filtered_frontier.size();
-        parallel_for(0, frontier_size, [&](size_t i) {
-          frontier[i] = filtered_frontier[i];
-          in_frontier[frontier[i]] = true;
-        });
+        // Rebuild working set with all vertices that have excess > 0 and height < n
+        working_set_size = 0;
+        for (NodeId v = 0; v < G.n; v++) {
+          if (v != source && v != sink && excess[v] > 0 && heights[v] < n) {
+            working_set[working_set_size++] = v;
+          }
+        }
       }
       
-      // Check if working set is empty (lines 11-12)
-      if (frontier_size == 0) {
+      if (working_set_size == 0) {
         break;
       }
       
-      // Phase 1: Discharge all vertices in parallel (lines 14-46)
-      parallel_for(0, frontier_size, [&](size_t i) {
-        NodeId v = frontier[i];
-        discharge_vertex(v);
+      // Initialize per-vertex data structures
+      parallel_for(0, working_set_size, [&](size_t i) {
+        NodeId v = working_set[i];
+        discovered_vertices[v].clear();
+        new_heights[v] = heights[v];
+        added_excess[v] = 0;
+        is_discovered[v] = false;
       });
       
-      // Phase 2: Update heights and excess (lines 48-52)
-      parallel_for(0, frontier_size, [&](size_t i) {
-        NodeId v = frontier[i];
+      // Main discharge loop for each vertex in working set
+      parallel_for(0, working_set_size, [&](size_t i) {
+        NodeId v = working_set[i];
+        FlowTy e = excess[v]; // local copy of excess
+        
+        while (e > 0) {
+          int new_label = n;
+          bool skipped = false;
+          
+          // Scan all residual edges
+          for (size_t j = G.offsets[v]; j < G.offsets[v + 1]; j++) {
+            auto& edge = G.edges[j];
+            NodeId w = edge.v;
+            
+            if (e == 0) break; // vertex is already discharged completely
+            
+            bool admissible = (new_heights[v] == heights[w] + 1);
+            
+            // Check if edge is shared between two active vertices
+            if (excess[w] > 0) {
+              bool win = (heights[v] == heights[w] + 1) || 
+                        (heights[v] < heights[w] - 1) || 
+                        (heights[v] == heights[w] && v < w);
+              if (admissible && !win) {
+                skipped = true;
+                continue; // skip to next residual edge
+              }
+            }
+            
+            // Push flow if edge is admissible and has capacity
+            if (admissible && edge.w > 0) {
+              FlowTy delta = min(edge.w, e);
+              edge.w -= delta;
+              G.edges[edge.rev].w += delta;
+              e -= delta;
+              
+              // For sink, update excess immediately; for others use added_excess
+              if (w == sink) {
+                write_add(&excess[w], delta);
+              } else {
+                write_add(&added_excess[w], delta);
+              }
+              
+              // Add w to discovered vertices if not sink and not yet discovered
+              if (w != sink && compare_and_swap(&is_discovered[w], false, true)) {
+                discovered_vertices[v].push_back(w);
+              }
+            }
+            
+            // Update new label for relabeling
+            if (edge.w > 0 && heights[w] >= new_heights[v]) {
+              new_label = min(new_label, heights[w] + 1);
+            }
+          }
+          
+          if (e == 0 || skipped) {
+            break;
+          }
+          
+          // Relabel
+          new_heights[v] = new_label;
+          if (new_heights[v] == n) {
+            break;
+          }
+        }
+        
+        // Store remaining excess
+        added_excess[v] = e - excess[v];
+        
+        // Add self to discovered if has excess
+        if (e > 0 && compare_and_swap(&is_discovered[v], false, true)) {
+          discovered_vertices[v].push_back(v);
+        }
+      });
+      
+      // Update heights and excess values
+      parallel_for(0, working_set_size, [&](size_t i) {
+        NodeId v = working_set[i];
         heights[v] = new_heights[v];
         excess[v] += added_excess[v];
         added_excess[v] = 0;
         is_discovered[v] = false;
       });
       
-      // Collect discovered vertices (line 54)
-      vector<NodeId> new_working_set_vec;
-      for (size_t i = 0; i < frontier_size; i++) {
-        NodeId v = frontier[i];
+      // Collect all discovered vertices for next working set
+      sequence<NodeId> new_working_set(G.n);
+      size_t new_working_set_size = 0;
+      
+      for (size_t i = 0; i < working_set_size; i++) {
+        NodeId v = working_set[i];
         for (NodeId w : discovered_vertices[v]) {
-          new_working_set_vec.push_back(w);
+          if (heights[w] < n) {
+            new_working_set[new_working_set_size++] = w;
+          }
         }
       }
       
-      // Filter new working set: keep only vertices with d(v) < n (line 55)
-      sequence<NodeId> new_working_set = 
-        parlay::filter(parlay::to_sequence(new_working_set_vec), 
-                      [&](NodeId v) { return heights[v] < n; });
-      
-      // Reset frontier flags
-      parallel_for(0, frontier_size, [&](size_t i) { 
-        in_frontier[frontier[i]] = false; 
-      });
-      
-      // Phase 3: Final update for discovered vertices (lines 57-60)
-      parallel_for(0, new_working_set.size(), [&](size_t i) {
+      // Update excess for nodes in new working set
+      parallel_for(0, new_working_set_size, [&](size_t i) {
         NodeId v = new_working_set[i];
         excess[v] += added_excess[v];
         added_excess[v] = 0;
@@ -263,14 +298,15 @@ class PRSyncNondetWin {
       });
       
       // Update working set
-      frontier_size = new_working_set.size();
-      parallel_for(0, frontier_size, [&](size_t i) {
-        frontier[i] = new_working_set[i];
-        in_frontier[frontier[i]] = true;
-      });
+      for (size_t i = 0; i < new_working_set_size; i++) {
+        working_set[i] = new_working_set[i];
+      }
+      working_set_size = new_working_set_size;
       
-      work_counter += frontier_size; // Track work done
+      // Update work counter
+      work_counter += working_set_size;
     }
+    
     return excess[sink];
   }
 };
