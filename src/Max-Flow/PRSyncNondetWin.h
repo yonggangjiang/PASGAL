@@ -276,32 +276,40 @@ class PRSyncNondetWin {
         is_discovered[v] = false;
       });
       
-      // Collect all discovered vertices for next working set
+      // Collect all discovered vertices for next working set (line 54: Concat)
       sequence<NodeId> new_working_set(G.n);
       size_t new_working_set_size = 0;
       
       for (size_t i = 0; i < working_set_size; i++) {
         NodeId v = working_set[i];
         for (NodeId w : discovered_vertices[v]) {
-          if (heights[w] < n) {
-            new_working_set[new_working_set_size++] = w;
-          }
+          new_working_set[new_working_set_size++] = w;
         }
       }
       
-      // Update excess for nodes in new working set
-      parallel_for(0, new_working_set_size, [&](size_t i) {
+      // Filter working set (line 55: workingSet = [v | v ← workingSet, d(v) < n])
+      size_t filtered_size = 0;
+      for (size_t i = 0; i < new_working_set_size; i++) {
         NodeId v = new_working_set[i];
-        excess[v] += added_excess[v];
-        added_excess[v] = 0;
-        is_discovered[v] = false;
-      });
+        if (heights[v] < n) {
+          new_working_set[filtered_size++] = v;
+        }
+      }
+      new_working_set_size = filtered_size;
       
       // Update working set
       for (size_t i = 0; i < new_working_set_size; i++) {
         working_set[i] = new_working_set[i];
       }
       working_set_size = new_working_set_size;
+      
+      // Lines 57-60: Update excess for nodes in new working set
+      parallel_for(0, working_set_size, [&](size_t i) {
+        NodeId v = working_set[i];
+        excess[v] += added_excess[v];
+        added_excess[v] = 0;
+        is_discovered[v] = false;
+      });
       
       // Update work counter
       work_counter += working_set_size;
