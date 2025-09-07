@@ -19,8 +19,8 @@ typedef float FlowTy;
 typedef int32_t FlowTy;
 #endif
 
-constexpr int NUM_SRC = 5;
-constexpr int NUM_ROUND = 5;
+constexpr int NUM_SRC = 1;
+constexpr int NUM_ROUND = 1;
 constexpr int LOG2_WEIGHT = 6;
 constexpr int WEIGHT_RANGE = 1 << LOG2_WEIGHT;
 
