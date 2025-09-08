@@ -35,13 +35,20 @@
 
 using namespace benchIO;
 
-static uint32_t generate_random_weight(uint64_t edge_id) {
-  // Use hash of edge ID to generate deterministic weight
-  uint32_t hash_val = edge_id * 2654435761U;
-  hash_val ^= hash_val >> 16;
-  hash_val *= 2654435761U;
-  hash_val ^= hash_val >> 16;
-  return (hash_val % 10000) + 1;
+static uint32_t hash32(uint32_t a) {
+  // Use the exact same hash32 function as parlay::hash32
+  a = (a + 0x7ed55d16) + (a << 12);
+  a = (a ^ 0xc761c23c) ^ (a >> 19);
+  a = (a + 0x165667b1) + (a << 5);
+  a = (a + 0xd3a2646c) ^ (a << 9);
+  a = (a + 0xfd7046c5) + (a << 3);
+  a = (a ^ 0xb55a4f09) ^ (a >> 16);
+  return a;
+}
+
+static uint32_t generate_random_weight(uint32_t u, uint32_t v, uint32_t l, uint32_t range) {
+  // Use the same logic as push-relabel.cpp: (hash32(u) ^ hash32(v)) % range + l
+  return ((hash32(u) ^ hash32(v)) % range) + l;
 }
 template <class intT>
 int xToStringLen(edge<intT> a) { 
@@ -411,19 +418,25 @@ namespace benchIO {
       
       for (intT i = 0; i < m; ++i) {
         adj[i] = static_cast<intT>(neighbors_raw[i]);
-        // Generate deterministic weight based on edge ID
-        weights[i] = generate_random_weight(i);
+      }
+      
+      // Generate weights using the same logic as push-relabel.cpp
+      for (intT u = 0; u < n; ++u) {
+        for (intT j = offsets_raw[u]; j < offsets_raw[u + 1]; ++j) {
+          intT v_id = adj[j];
+          weights[j] = generate_random_weight(u, v_id, 1, 64);
+        }
       }
       
       free(offsets_raw);
       free(neighbors_raw);
       
       // Default source and sink
-      intT S = 0;
-      intT T = (n > 1) ? 1 : 0;
+      intT S = hash32(0) % n;
+      intT T = hash32(1) % n;
       
       cout << "Read binary graph with " << n << " nodes, " << m << " edges" << endl;
-      cout << "Added random weights in range [1, 10000]" << endl;
+      cout << "Added random weights in range [1, 64]" << endl;
       cout << "Using default source=" << S << ", sink=" << T << endl;
       
       return FlowGraph<intT>(wghGraph<intT>(v, n, m, adj, weights), S, T);
@@ -584,8 +597,9 @@ namespace benchIO {
       // Copy neighbors and generate random weights
       for (intT j = 0; j < degree; j++) {
         adj[start + j] = neighbors_raw[start + j];
-        // Generate deterministic weight based on edge ID
-        weights[start + j] = generate_random_weight(start + j);
+        // Generate weight using same logic as push-relabel.cpp: (u,v) -> weight
+        intT v_id = neighbors_raw[start + j];
+        weights[start + j] = generate_random_weight(i, v_id, 1, 64);
       }
     }
     
@@ -594,7 +608,7 @@ namespace benchIO {
     close(fd);
     
     cout << "Binary graph loaded successfully, added random weights" << endl;
-    return FlowGraph<intT>(wghGraph<intT>(v, n, m, adj, weights), 0, (n > 1) ? 1 : 0);
+    return FlowGraph<intT>(wghGraph<intT>(v, n, m, adj, weights), hash32(0) % n, hash32(1) % n);
   }
 
   template<typename intT>
@@ -665,12 +679,14 @@ namespace benchIO {
       }
       cout << "Read weights from file" << endl;
     } else {
-      // Generate deterministic weights
-      for (intT i = 0; i < m; i++) {
-        // Generate deterministic weight based on edge ID
-        weights[i] = generate_random_weight(i);
+      // Generate weights using same logic as push-relabel.cpp
+      for (intT u = 0; u < n; u++) {
+        for (intT j = offsets[u]; j < offsets[u + 1]; j++) {
+          intT v_id = adj[j];
+          weights[j] = generate_random_weight(u, v_id, 1, 64);
+        }
       }
-      cout << "Added random weights in range [1, 10000]" << endl;
+      cout << "Added random weights in range [1, 64]" << endl;
     }
     
     // Create vertex array
@@ -684,8 +700,8 @@ namespace benchIO {
     free(offsets);
     
     // Default source and sink
-    intT source = 0;
-    intT sink = (n > 1) ? 1 : 0;
+    intT source = hash32(0) % n;
+    intT sink = hash32(1) % n;
     
     cout << "Successfully loaded .adj file with " << n << " nodes, " << m << " edges" << endl;
     cout << "Using default source=" << source << ", sink=" << sink << endl;

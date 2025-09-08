@@ -1,4 +1,6 @@
 #include <queue>
+#include <limits>
+#include <algorithm>
 
 #include "graph.h"
 #include "hashbag.h"
@@ -25,16 +27,20 @@ class PRSyncNondetWin {
   sequence<int> heights;
   sequence<FlowTy> excess;
   
-  // New fields for PRSyncNondetWin
-  sequence<FlowTy> added_excess;
-  sequence<bool> is_discovered;
-  sequence<vector<NodeId>> discovered_vertices;
-  sequence<int> new_heights;
-  size_t work_counter;
-  size_t work_threshold;
-  bool first_pulse;
+  // Optimized fields based on maxFlow.C
+  sequence<FlowTy> excess_new;  // For atomic updates
+  sequence<bool> in_working_set;
+  sequence<pair<NodeId, FlowTy>> pushes;  // Push operations buffer
   sequence<NodeId> working_set;
   size_t working_set_size;
+  size_t work_counter;
+  size_t work_threshold;
+  size_t global_relabel_counter;
+  bool first_iteration;
+  
+  // Constants for work computation (from maxFlow.C)
+  static constexpr size_t ALPHA = 6;
+  static constexpr size_t BETA = 12;
 
  public:
   PRSyncNondetWin() = delete;
@@ -45,16 +51,16 @@ class PRSyncNondetWin {
     heights = sequence<int>::uninitialized(G.n);
     excess = sequence<FlowTy>::uninitialized(G.n);
     
-    // Initialize new fields
-    added_excess = sequence<FlowTy>::uninitialized(G.n);
-    is_discovered = sequence<bool>(G.n);
-    discovered_vertices = sequence<vector<NodeId>>(G.n);
-    new_heights = sequence<int>::uninitialized(G.n);
-    work_threshold = 4 * n; // Typical threshold
-    work_counter = 0;
-    first_pulse = true;
+    // Initialize optimized fields
+    excess_new = sequence<FlowTy>::uninitialized(G.n);
+    in_working_set = sequence<bool>(G.n);
+    pushes = sequence<pair<NodeId, FlowTy>>(G.m * 2 + G.n); // Buffer for push operations
     working_set = sequence<NodeId>::uninitialized(G.n);
     working_set_size = 0;
+    work_threshold = ALPHA * n + G.m / 2; // From maxFlow.C
+    work_counter = 0;
+    global_relabel_counter = 0;
+    first_iteration = true;
   }
   void add_to_bag(NodeId u) {
     if (u != source && u != sink &&
@@ -63,8 +69,10 @@ class PRSyncNondetWin {
     }
   }
 
-  // Global Relabel using reverse BFS from sink
+  // Global Relabel using reverse BFS from sink - optimized version
   void global_relabel() {
+    global_relabel_counter++;
+    
     // Reset all heights to n (unreachable)
     parallel_for(0, G.n, [&](size_t i) {
       if (i != sink) {
@@ -72,20 +80,19 @@ class PRSyncNondetWin {
       }
     });
     
-    // Start BFS from sink
+    // Sequential BFS for correctness
     sequence<NodeId> current_level(G.n);
     sequence<NodeId> next_level(G.n);
-    size_t current_size = 0;
-    size_t next_size = 0;
     
     heights[sink] = 0;
-    current_level[current_size++] = sink;
+    current_level[0] = sink;
+    size_t current_size = 1;
     
     int distance = 0;
     while (current_size > 0) {
-      next_size = 0;
+      size_t next_size = 0;
       
-      // Process all nodes at current distance
+      // Process current level
       for (size_t i = 0; i < current_size; i++) {
         NodeId u = current_level[i];
         
@@ -111,24 +118,26 @@ class PRSyncNondetWin {
       distance++;
     }
     
-    // Reset work counter and first pulse flag
+    // Reset work counter
     work_counter = 0;
-    first_pulse = false;
   }
 
   void init(NodeId s) {
     parallel_for(0, G.n, [&](size_t i) {
       heights[i] = 0;
       excess[i] = 0;
-      added_excess[i] = 0;
-      is_discovered[i] = false;
-      discovered_vertices[i].clear();
+      excess_new[i] = 0;
+      in_working_set[i] = false;
     });
     
     heights[s] = n;
     working_set_size = 0;
+    first_iteration = true;
     
-    // Saturate source-adjacent edges
+    // Saturate source-adjacent edges - optimized version
+    sequence<NodeId> temp_working_set(G.offsets[s + 1] - G.offsets[s]);
+    size_t temp_size = 0;
+    
     for (size_t i = G.offsets[s]; i < G.offsets[s + 1]; i++) {
       auto& e = G.edges[i];
       if (e.w > 0) {
@@ -136,23 +145,94 @@ class PRSyncNondetWin {
         excess[e.v] += e.w;
         e.w = 0;
         
-        // Add to working set if not source or sink
+        // Add to temporary working set if not source or sink
         if (e.v != source && e.v != sink && excess[e.v] > 0) {
-          working_set[working_set_size++] = e.v;
+          temp_working_set[temp_size++] = e.v;
         }
       }
+    }
+    
+    // Remove duplicates and set up initial working set
+    sort(temp_working_set.begin(), temp_working_set.begin() + temp_size);
+    temp_size = unique(temp_working_set.begin(), temp_working_set.begin() + temp_size) - temp_working_set.begin();
+    
+    for (size_t i = 0; i < temp_size; i++) {
+      working_set[working_set_size++] = temp_working_set[i];
     }
   }
 
   void relabel(NodeId u) {
-    heights[u] = std::numeric_limits<int>::max();
+    int new_height = std::numeric_limits<int>::max();
     for (size_t i = G.offsets[u]; i < G.offsets[u + 1]; i++) {
       auto& e = G.edges[i];
       if (e.w > 0) {
-        heights[u] = min(heights[u], heights[e.v]);
+        new_height = min(new_height, heights[e.v] + 1);
       }
     }
-    heights[u]++;
+    heights[u] = new_height;
+  }
+
+  // Process a single node - optimized based on maxFlow.C
+  pair<size_t, size_t> process_node(NodeId u, pair<NodeId, FlowTy>* push_buffer) {
+    if (u == source || u == sink || excess[u] <= 0 || heights[u] >= n) {
+      return {0, 0};
+    }
+    
+    size_t work_done = 0;
+    size_t push_count = 0;
+    FlowTy local_excess = excess[u];
+    
+    // Add self to push buffer first
+    push_buffer[push_count++] = {u, 0};
+    
+    while (local_excess > 0 && heights[u] < n) {
+      int min_height = n;
+      bool found_admissible = false;
+      
+      // Scan all edges for pushing and relabeling
+      for (size_t i = G.offsets[u]; i < G.offsets[u + 1]; i++) {
+        auto& e = G.edges[i];
+        NodeId v = e.v;
+        
+        if (local_excess <= 0) break;
+        
+        // Update min height for relabeling
+        if (e.w > 0) {
+          min_height = min(min_height, heights[v] + 1);
+        }
+        
+        // Check if edge is admissible for pushing
+        if (e.w > 0 && heights[u] == heights[v] + 1) {
+          found_admissible = true;
+          FlowTy delta = min(e.w, local_excess);
+          
+          // Push flow
+          e.w -= delta;
+          G.edges[e.rev].w += delta;
+          local_excess -= delta;
+          
+          // Add to push buffer
+          push_buffer[push_count++] = {v, delta};
+          
+          work_done += BETA;
+        }
+      }
+      
+      work_done += G.offsets[u + 1] - G.offsets[u]; // Edge scan work
+      
+      if (!found_admissible && local_excess > 0 && min_height < n) {
+        // Relabel
+        heights[u] = min_height;
+        work_done += BETA + (G.offsets[u + 1] - G.offsets[u]);
+      } else {
+        break;
+      }
+    }
+    
+    // Update remaining excess
+    push_buffer[0].second = local_excess - excess[u]; // Delta from original
+    
+    return {work_done, push_count};
   }
 
   FlowTy max_flow(NodeId s, NodeId t) {
@@ -163,156 +243,149 @@ class PRSyncNondetWin {
     }
     
     init(source);
-    first_pulse = true;
     
-    while (true) {
-      // Check conditions for global relabel
-      if (first_pulse || work_counter >= work_threshold || working_set_size == 0) {
+    // Initial global relabel
+    if (first_iteration) {
+      global_relabel();
+      first_iteration = false;
+    }
+    
+    // Allocate push buffers for all threads
+    sequence<pair<NodeId, FlowTy>> all_pushes(G.m * 2 + G.n);
+    sequence<size_t> push_offsets(max(working_set_size + 1, size_t(1)));
+    
+    size_t iteration = 0;
+    while (working_set_size > 0) {
+      iteration++;
+      
+      // Check if we need global relabel based on work threshold
+      const float GLOBAL_UPDATE_FREQ = 3.0;
+      if (work_counter * GLOBAL_UPDATE_FREQ > work_threshold) {
         global_relabel();
         
-        // Rebuild working set with all vertices that have excess > 0 and height < n
+        // Rebuild working set after global relabel
         working_set_size = 0;
         for (NodeId v = 0; v < G.n; v++) {
           if (v != source && v != sink && excess[v] > 0 && heights[v] < n) {
             working_set[working_set_size++] = v;
           }
         }
+        
+        if (working_set_size == 0) break;
+        
+        // Reallocate push buffers if needed
+        if (push_offsets.size() < working_set_size + 1) {
+          push_offsets = sequence<size_t>(working_set_size + 1);
+        }
       }
       
-      if (working_set_size == 0) {
+      // Initialize excess_new for this iteration
+      parallel_for(0, G.n, [&](size_t i) {
+        excess_new[i] = 0;
+        in_working_set[i] = false;
+      });
+      
+      // Estimate buffer sizes needed per node (conservative estimate)
+      parallel_for(0, working_set_size, [&](size_t i) {
+        NodeId u = working_set[i];
+        size_t degree = G.offsets[u + 1] - G.offsets[u];
+        push_offsets[i] = degree + 1; // +1 for self
+      });
+      
+      // Compute prefix sums for push buffer offsets
+      size_t total_pushes = 0;
+      for (size_t i = 0; i < working_set_size; i++) {
+        size_t current = push_offsets[i];
+        push_offsets[i] = total_pushes;
+        total_pushes += current;
+      }
+      push_offsets[working_set_size] = total_pushes;
+      
+      // Ensure we have enough space
+      if (all_pushes.size() < total_pushes) {
+        all_pushes = sequence<pair<NodeId, FlowTy>>(total_pushes * 2); // Extra space
+      }
+      
+      // Process all nodes in working set in parallel
+      sequence<pair<size_t, size_t>> work_and_pushes(working_set_size);
+      parallel_for(0, working_set_size, [&](size_t i) {
+        NodeId u = working_set[i];
+        pair<NodeId, FlowTy>* push_buffer = &all_pushes[push_offsets[i]];
+        work_and_pushes[i] = process_node(u, push_buffer);
+        in_working_set[u] = true;
+      });
+      
+      // Sum up work done
+      for (size_t i = 0; i < working_set_size; i++) {
+        work_counter += work_and_pushes[i].first;
+      }
+      
+      // Apply all pushes
+      for (size_t i = 0; i < working_set_size; i++) {
+        NodeId u = working_set[i];
+        size_t push_count = work_and_pushes[i].second;
+        pair<NodeId, FlowTy>* push_buffer = &all_pushes[push_offsets[i]];
+        
+        // Apply self excess update first
+        excess[u] += push_buffer[0].second;
+        
+        // Apply pushes to other nodes
+        for (size_t j = 1; j < push_count; j++) {
+          NodeId v = push_buffer[j].first;
+          FlowTy delta = push_buffer[j].second;
+          
+          if (v == sink) {
+            write_add(&excess[v], delta);
+          } else {
+            write_add(&excess_new[v], delta);
+          }
+        }
+      }
+      
+      // Apply excess updates
+      parallel_for(0, G.n, [&](size_t i) {
+        if (excess_new[i] > 0) {
+          excess[i] += excess_new[i];
+        }
+      });
+      
+      // Build new working set - optimized approach inspired by maxFlow.C
+      // Collect all vertices that received pushes
+      sequence<NodeId> candidate_set(G.n);
+      size_t candidate_size = 0;
+      
+      // Add vertices from push operations
+      for (size_t i = 0; i < working_set_size; i++) {
+        size_t push_count = work_and_pushes[i].second;
+        pair<NodeId, FlowTy>* push_buffer = &all_pushes[push_offsets[i]];
+        
+        for (size_t j = 0; j < push_count; j++) {
+          NodeId v = push_buffer[j].first;
+          if (v != source && v != sink && heights[v] < n) {
+            candidate_set[candidate_size++] = v;
+          }
+        }
+      }
+      
+      // Sort and remove duplicates
+      if (candidate_size > 0) {
+        sort(candidate_set.begin(), candidate_set.begin() + candidate_size);
+        candidate_size = unique(candidate_set.begin(), candidate_set.begin() + candidate_size) - candidate_set.begin();
+      }
+      
+      // Filter to only include vertices with positive excess
+      working_set_size = 0;
+      for (size_t i = 0; i < candidate_size; i++) {
+        NodeId v = candidate_set[i];
+        if (excess[v] > 0) {
+          working_set[working_set_size++] = v;
+        }
+      }
+      
+      // Safety check to avoid infinite loops
+      if (iteration > 10000) {
         break;
       }
-      
-      // Initialize per-vertex data structures
-      parallel_for(0, working_set_size, [&](size_t i) {
-        NodeId v = working_set[i];
-        discovered_vertices[v].clear();
-        new_heights[v] = heights[v];
-        added_excess[v] = 0;
-        is_discovered[v] = false;
-      });
-      
-      // Main discharge loop for each vertex in working set
-      parallel_for(0, working_set_size, [&](size_t i) {
-        NodeId v = working_set[i];
-        FlowTy e = excess[v]; // local copy of excess
-        
-        while (e > 0) {
-          int new_label = n;
-          bool skipped = false;
-          
-          // Scan all residual edges
-          for (size_t j = G.offsets[v]; j < G.offsets[v + 1]; j++) {
-            auto& edge = G.edges[j];
-            NodeId w = edge.v;
-            
-            if (e == 0) break; // vertex is already discharged completely
-            
-            bool admissible = (new_heights[v] == heights[w] + 1);
-            
-            // Check if edge is shared between two active vertices
-            if (excess[w] > 0) {
-              bool win = (heights[v] == heights[w] + 1) || 
-                        (heights[v] < heights[w] - 1) || 
-                        (heights[v] == heights[w] && v < w);
-              if (admissible && !win) {
-                skipped = true;
-                continue; // skip to next residual edge
-              }
-            }
-            
-            // Push flow if edge is admissible and has capacity
-            if (admissible && edge.w > 0) {
-              FlowTy delta = min(edge.w, e);
-              edge.w -= delta;
-              G.edges[edge.rev].w += delta;
-              e -= delta;
-              
-              // For sink, update excess immediately; for others use added_excess
-              if (w == sink) {
-                write_add(&excess[w], delta);
-              } else {
-                write_add(&added_excess[w], delta);
-              }
-              
-              // Add w to discovered vertices if not sink and not yet discovered
-              if (w != sink && compare_and_swap(&is_discovered[w], false, true)) {
-                discovered_vertices[v].push_back(w);
-              }
-            }
-            
-            // Update new label for relabeling
-            if (edge.w > 0 && heights[w] >= new_heights[v]) {
-              new_label = min(new_label, heights[w] + 1);
-            }
-          }
-          
-          if (e == 0 || skipped) {
-            break;
-          }
-          
-          // Relabel
-          new_heights[v] = new_label;
-          if (new_heights[v] == n) {
-            break;
-          }
-        }
-        
-        // Store remaining excess
-        added_excess[v] = e - excess[v];
-        
-        // Add self to discovered if has excess
-        if (e > 0 && compare_and_swap(&is_discovered[v], false, true)) {
-          discovered_vertices[v].push_back(v);
-        }
-      });
-      
-      // Update heights and excess values
-      parallel_for(0, working_set_size, [&](size_t i) {
-        NodeId v = working_set[i];
-        heights[v] = new_heights[v];
-        excess[v] += added_excess[v];
-        added_excess[v] = 0;
-        is_discovered[v] = false;
-      });
-      
-      // Collect all discovered vertices for next working set (line 54: Concat)
-      sequence<NodeId> new_working_set(G.n);
-      size_t new_working_set_size = 0;
-      
-      for (size_t i = 0; i < working_set_size; i++) {
-        NodeId v = working_set[i];
-        for (NodeId w : discovered_vertices[v]) {
-          new_working_set[new_working_set_size++] = w;
-        }
-      }
-      
-      // Filter working set (line 55: workingSet = [v | v ← workingSet, d(v) < n])
-      size_t filtered_size = 0;
-      for (size_t i = 0; i < new_working_set_size; i++) {
-        NodeId v = new_working_set[i];
-        if (heights[v] < n) {
-          new_working_set[filtered_size++] = v;
-        }
-      }
-      new_working_set_size = filtered_size;
-      
-      // Update working set
-      for (size_t i = 0; i < new_working_set_size; i++) {
-        working_set[i] = new_working_set[i];
-      }
-      working_set_size = new_working_set_size;
-      
-      // Lines 57-60: Update excess for nodes in new working set
-      parallel_for(0, working_set_size, [&](size_t i) {
-        NodeId v = working_set[i];
-        excess[v] += added_excess[v];
-        added_excess[v] = 0;
-        is_discovered[v] = false;
-      });
-      
-      // Update work counter
-      work_counter += working_set_size;
     }
     
     return excess[sink];

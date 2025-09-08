@@ -148,7 +148,7 @@ void run(Algo &algo, Graph &G) {
   using NodeId = typename Graph::NodeId;
   for (int v = 0; v < NUM_SRC; v++) {
     NodeId s = hash32(v) % G.n;
-    NodeId t = hash32(v + NUM_SRC) % G.n;
+    NodeId t = hash32(v + 1) % G.n;
     run(algo, G, s, t);
   }
 }
