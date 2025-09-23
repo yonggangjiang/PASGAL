@@ -1,5 +1,5 @@
 #include "push-relabel.h"
-#include "PRSyncNondetWin.h"
+#include "PRSyncNondetWin_optimized.h"
 
 #include <queue>
 #include <type_traits>
@@ -71,6 +71,9 @@ Graph generate_reverse_edges(const Graph &G) {
     EdgeId id = std::get<2>(edgelist[i]);
     G_rev.edges[i].v = std::get<1>(edgelist[i]);
     G_rev.edges[i].w = (id & 1) ? 0 : G.edges[id / 2].w;
+    if (G.symmetrized) {
+    G_rev.edges[i].w = G.edges[id / 2].w;
+    } 
     if (i == 0 || std::get<0>(edgelist[i]) != std::get<0>(edgelist[i - 1])) {
       G_rev.offsets[std::get<0>(edgelist[i])] = i;
     }

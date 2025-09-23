@@ -10,22 +10,24 @@ usage() {
     echo "  -p, --path PATH          Graph path directory (default: /data/graphs/)"
     echo "  -s, --symmetrized        Use symmetrized graph flag"
     echo "  -o, --output FILE        Output TSV file prefix (default: max-flow-results)"
+    echo "  --timeout SECONDS        Timeout for each run in seconds (default: no timeout)"
     echo "  -h, --help               Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 -g twitter_sym.bin -a nondet -t 1,2,4,8"
     echo "  $0 -g asia_sym.bin -a basic -t 4,16,64 -s"
-    echo "  $0 -g soc-LiveJournal1_sym.bin -a pbbs -t 1,4,8,16"
+    echo "  $0 -g soc-LiveJournal1_sym.bin -a pbbs -t 1,4,8,16 --timeout 300"
     echo "  $0 -g soc-LiveJournal1_sym.bin -t 1,4,8,16  # Run all algorithms"
 }
 
 # Default values
 GRAPH=""
 ALGORITHM=""  # Empty means run all algorithms
-THREAD_COUNTS="1,2,4,8,16"
+THREAD_COUNTS="1,4,16,64"
 GRAPH_PATH="/data/graphs/"
 SYMMETRIZED=""
 OUTPUT_PREFIX="max-flow-results"
+TIMEOUT="600"  # Empty means no timeout
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -52,6 +54,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -o|--output)
             OUTPUT_PREFIX="$2"
+            shift 2
+            ;;
+        --timeout)
+            TIMEOUT="$2"
             shift 2
             ;;
         -h|--help)
@@ -97,6 +103,7 @@ echo "Graph: $FULL_GRAPH_PATH"
 echo "Algorithms: ${ALGORITHMS[*]}"
 echo "Thread counts: ${THREADS[*]}"
 echo "Symmetrized: ${SYMMETRIZED:-"No"}"
+echo "Timeout: ${TIMEOUT:-"No timeout"}"
 echo "========================================"
 
 # Function to get clean output filename
@@ -216,13 +223,34 @@ for current_algo in "${ALGORITHMS[@]}"; do
         fi
         
         echo "Running: $cmd"
+        if [[ -n "$TIMEOUT" ]]; then
+            echo "Timeout: $TIMEOUT seconds"
+        else
+            echo "Timeout: No timeout"
+        fi
         
-        # Run the command and capture output
-        output=$($cmd 2>&1)
+        # Run the command with or without timeout and capture output
+        if [[ -n "$TIMEOUT" ]]; then
+            output=$(timeout "${TIMEOUT}s" $cmd 2>&1)
+            exit_code=$?
+        else
+            output=$($cmd 2>&1)
+            exit_code=$?
+        fi
         # echo "$output"  # Uncomment this line if you want to see full output
         
+        # Check if command timed out
+        if [[ $exit_code -eq 124 && -n "$TIMEOUT" ]]; then
+            echo "Warning: Command timed out after $TIMEOUT seconds"
+            output="TIMEOUT: Command exceeded $TIMEOUT seconds"
+        fi
+        
         # Extract average time and max flow from output
-        if [[ "$current_algo" == "pbbs" ]]; then
+        if [[ $exit_code -eq 124 && -n "$TIMEOUT" ]]; then
+            # Command timed out
+            avg_time="TIMEOUT"
+            max_flow="TIMEOUT"
+        elif [[ "$current_algo" == "pbbs" ]]; then
             # PBBS format: "PBBS-time:" for time and "flow=" for flow value
             avg_time=$(echo "$output" | grep "PBBS-time:" | tail -1 | awk '{print $2}')
             max_flow=$(echo "$output" | grep "flow=" | tail -1 | sed 's/.*flow=//' | awk '{print $1}')
@@ -233,7 +261,15 @@ for current_algo in "${ALGORITHMS[@]}"; do
         fi
         
         # Write results to individual output file
-        if [[ -n "$avg_time" && -n "$max_flow" ]]; then
+        if [[ "$avg_time" == "TIMEOUT" ]]; then
+            echo -e "${GRAPH}\t${thread_count}\tTIMEOUT\tTIMEOUT" >> "$OUTPUT_FILE"
+            echo "Results: TIMEOUT (exceeded ${TIMEOUT} seconds)"
+            
+            # Also write to combined file if running multiple algorithms
+            if [[ ${#ALGORITHMS[@]} -gt 1 ]]; then
+                echo -e "${current_algo}\t${GRAPH}\t${thread_count}\tTIMEOUT\tTIMEOUT" >> "$COMBINED_OUTPUT"
+            fi
+        elif [[ -n "$avg_time" && -n "$max_flow" ]]; then
             echo -e "${GRAPH}\t${thread_count}\t${max_flow}\t${avg_time}" >> "$OUTPUT_FILE"
             echo "Results: Max Flow = $max_flow, Average Time = $avg_time seconds"
             

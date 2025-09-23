@@ -180,23 +180,24 @@ class PRSyncNondetWin {
     
     size_t work_done = 0;
     size_t push_count = 0;
-    FlowTy local_excess = excess[u];
+    FlowTy original_excess = excess[u];
+    FlowTy local_excess = original_excess;
     
-    // Add self to push buffer first
+    // Add self to push buffer first (for excess delta tracking)
     push_buffer[push_count++] = {u, 0};
     
+    // Main discharge loop with relabeling - inspired by maxFlow.C RELABEL_TACTIC==3
     while (local_excess > 0 && heights[u] < n) {
       int min_height = n;
       bool found_admissible = false;
-      
-      // Scan all edges for pushing and relabeling
+      // Scan all edges for pushing and compute new height
       for (size_t i = G.offsets[u]; i < G.offsets[u + 1]; i++) {
         auto& e = G.edges[i];
         NodeId v = e.v;
         
         if (local_excess <= 0) break;
         
-        // Update min height for relabeling
+        // Update min height for potential relabeling
         if (e.w > 0) {
           min_height = min(min_height, heights[v] + 1);
         }
@@ -206,31 +207,36 @@ class PRSyncNondetWin {
           found_admissible = true;
           FlowTy delta = min(e.w, local_excess);
           
-          // Push flow
+          // Perform push operation
           e.w -= delta;
           G.edges[e.rev].w += delta;
           local_excess -= delta;
           
-          // Add to push buffer
+          // Add to push buffer  
           push_buffer[push_count++] = {v, delta};
           
-          work_done += BETA;
+          work_done += BETA; // Push work
         }
       }
       
       work_done += G.offsets[u + 1] - G.offsets[u]; // Edge scan work
       
+      // Relabel if no admissible edges found and still have excess
       if (!found_admissible && local_excess > 0 && min_height < n) {
-        // Relabel
         heights[u] = min_height;
-        work_done += BETA + (G.offsets[u + 1] - G.offsets[u]);
+        work_done += BETA + (G.offsets[u + 1] - G.offsets[u]); // Relabel work
       } else {
+        break; // No more work to do or reached unreachable height
+      }
+      
+      // Break if we relabeled to unreachable height
+      if (heights[u] >= n) {
         break;
       }
     }
     
-    // Update remaining excess
-    push_buffer[0].second = local_excess - excess[u]; // Delta from original
+    // Store excess delta in first buffer position
+    push_buffer[0].second = local_excess - original_excess;
     
     return {work_done, push_count};
   }
@@ -250,15 +256,13 @@ class PRSyncNondetWin {
       first_iteration = false;
     }
     
-    // Allocate push buffers for all threads
-    sequence<pair<NodeId, FlowTy>> all_pushes(G.m * 2 + G.n);
-    sequence<size_t> push_offsets(max(working_set_size + 1, size_t(1)));
-    
     size_t iteration = 0;
+    
+    // Main algorithm loop - optimized based on maxFlow.C
     while (working_set_size > 0) {
       iteration++;
       
-      // Check if we need global relabel based on work threshold
+      // Check for global relabel based on work threshold
       const float GLOBAL_UPDATE_FREQ = 3.0;
       if (work_counter * GLOBAL_UPDATE_FREQ > work_threshold) {
         global_relabel();
@@ -272,12 +276,11 @@ class PRSyncNondetWin {
         }
         
         if (working_set_size == 0) break;
-        
-        // Reallocate push buffers if needed
-        if (push_offsets.size() < working_set_size + 1) {
-          push_offsets = sequence<size_t>(working_set_size + 1);
-        }
       }
+      
+      // Adaptive thresholds based on working set size (inspired by maxFlow.C)
+      bool use_parallel = working_set_size > 50;
+      size_t parallel_threshold = 300;
       
       // Initialize excess_new for this iteration
       parallel_for(0, G.n, [&](size_t i) {
@@ -285,51 +288,58 @@ class PRSyncNondetWin {
         in_working_set[i] = false;
       });
       
-      // Estimate buffer sizes needed per node (conservative estimate)
+      // Allocate push buffers with better size estimation
+      sequence<size_t> buffer_sizes(working_set_size);
       parallel_for(0, working_set_size, [&](size_t i) {
         NodeId u = working_set[i];
         size_t degree = G.offsets[u + 1] - G.offsets[u];
-        push_offsets[i] = degree + 1; // +1 for self
+        buffer_sizes[i] = degree + 2; // +2 for self and safety
       });
       
-      // Compute prefix sums for push buffer offsets
-      size_t total_pushes = 0;
+      // Compute prefix sums for buffer allocation
+      sequence<size_t> buffer_offsets = sequence<size_t>::uninitialized(working_set_size + 1);
+      buffer_offsets[0] = 0;
       for (size_t i = 0; i < working_set_size; i++) {
-        size_t current = push_offsets[i];
-        push_offsets[i] = total_pushes;
-        total_pushes += current;
-      }
-      push_offsets[working_set_size] = total_pushes;
-      
-      // Ensure we have enough space
-      if (all_pushes.size() < total_pushes) {
-        all_pushes = sequence<pair<NodeId, FlowTy>>(total_pushes * 2); // Extra space
+        buffer_offsets[i + 1] = buffer_offsets[i] + buffer_sizes[i];
       }
       
-      // Process all nodes in working set in parallel
+      size_t total_buffer_size = buffer_offsets[working_set_size];
+      sequence<pair<NodeId, FlowTy>> all_pushes(total_buffer_size);
+      
+      // Process all nodes in working set 
       sequence<pair<size_t, size_t>> work_and_pushes(working_set_size);
-      parallel_for(0, working_set_size, [&](size_t i) {
-        NodeId u = working_set[i];
-        pair<NodeId, FlowTy>* push_buffer = &all_pushes[push_offsets[i]];
-        work_and_pushes[i] = process_node(u, push_buffer);
-        in_working_set[u] = true;
-      });
       
-      // Sum up work done
+      if (use_parallel && working_set_size > parallel_threshold) {
+        parallel_for(0, working_set_size, [&](size_t i) {
+          NodeId u = working_set[i];
+          pair<NodeId, FlowTy>* push_buffer = &all_pushes[buffer_offsets[i]];
+          work_and_pushes[i] = process_node(u, push_buffer);
+          in_working_set[u] = true;
+        });
+      } else {
+        for (size_t i = 0; i < working_set_size; i++) {
+          NodeId u = working_set[i];
+          pair<NodeId, FlowTy>* push_buffer = &all_pushes[buffer_offsets[i]];
+          work_and_pushes[i] = process_node(u, push_buffer);
+          in_working_set[u] = true;
+        }
+      }
+      
+      // Accumulate work counter
       for (size_t i = 0; i < working_set_size; i++) {
         work_counter += work_and_pushes[i].first;
       }
       
-      // Apply all pushes
+      // Apply pushes using race-mode approach (inspired by maxFlow.C MODE_RACE)
       for (size_t i = 0; i < working_set_size; i++) {
         NodeId u = working_set[i];
         size_t push_count = work_and_pushes[i].second;
-        pair<NodeId, FlowTy>* push_buffer = &all_pushes[push_offsets[i]];
+        pair<NodeId, FlowTy>* push_buffer = &all_pushes[buffer_offsets[i]];
         
-        // Apply self excess update first
+        // Apply excess change to source node
         excess[u] += push_buffer[0].second;
         
-        // Apply pushes to other nodes
+        // Apply pushes to target nodes  
         for (size_t j = 1; j < push_count; j++) {
           NodeId v = push_buffer[j].first;
           FlowTy delta = push_buffer[j].second;
@@ -342,22 +352,21 @@ class PRSyncNondetWin {
         }
       }
       
-      // Apply excess updates
+      // Apply accumulated excess updates
       parallel_for(0, G.n, [&](size_t i) {
         if (excess_new[i] > 0) {
           excess[i] += excess_new[i];
         }
       });
       
-      // Build new working set - optimized approach inspired by maxFlow.C
-      // Collect all vertices that received pushes
-      sequence<NodeId> candidate_set(G.n);
+      // Build new working set - collect candidate nodes efficiently
+      sequence<NodeId> candidate_set(total_buffer_size);
       size_t candidate_size = 0;
       
-      // Add vertices from push operations
+      // Collect all nodes that received pushes
       for (size_t i = 0; i < working_set_size; i++) {
         size_t push_count = work_and_pushes[i].second;
-        pair<NodeId, FlowTy>* push_buffer = &all_pushes[push_offsets[i]];
+        pair<NodeId, FlowTy>* push_buffer = &all_pushes[buffer_offsets[i]];
         
         for (size_t j = 0; j < push_count; j++) {
           NodeId v = push_buffer[j].first;
@@ -367,19 +376,37 @@ class PRSyncNondetWin {
         }
       }
       
-      // Sort and remove duplicates
-      if (candidate_size > 0) {
+      // Filter candidates efficiently (inspired by maxFlow.C filtering)
+      if (candidate_size > 1000) {
+        // Use parallel filtering for large sets - manual implementation since sequence::filter needs template args
+        working_set_size = 0;
+        parallel_for(0, candidate_size, [&](size_t i) {
+          if (excess[candidate_set[i]] > 0) {
+            // Use atomic increment for thread safety
+            size_t pos = __sync_fetch_and_add(&working_set_size, 1);
+            if (pos < G.n) {
+              working_set[pos] = candidate_set[i];
+            }
+          }
+        });
+      } else {
+        // Use sequential filtering for smaller sets
         sort(candidate_set.begin(), candidate_set.begin() + candidate_size);
-        candidate_size = unique(candidate_set.begin(), candidate_set.begin() + candidate_size) - candidate_set.begin();
+        candidate_size = unique(candidate_set.begin(), candidate_set.begin() + candidate_size) 
+                         - candidate_set.begin();
+        
+        working_set_size = 0;
+        for (size_t i = 0; i < candidate_size; i++) {
+          NodeId v = candidate_set[i];
+          if (excess[v] > 0) {
+            working_set[working_set_size++] = v;
+          }
+        }
       }
       
-      // Filter to only include vertices with positive excess
-      working_set_size = 0;
-      for (size_t i = 0; i < candidate_size; i++) {
-        NodeId v = candidate_set[i];
-        if (excess[v] > 0) {
-          working_set[working_set_size++] = v;
-        }
+      // Reset working set flags
+      for (size_t i = 0; i < working_set_size; i++) {
+        in_working_set[working_set[i]] = false;
       }
       
       // Safety check to avoid infinite loops
