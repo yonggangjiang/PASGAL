@@ -1,6 +1,8 @@
 #include "push-relabel.h"
 #include "PRSyncNondetWin_optimized.h"
 
+#include <quill/Quill.h>
+
 #include <queue>
 #include <type_traits>
 #include <string>
@@ -120,26 +122,26 @@ void run(Algo &algo, [[maybe_unused]] Graph &G, NodeId s, NodeId t) {
   cout << "source " << s << ", target " << t << endl;
   double total_time = 0;
   FlowTy max_flow = 0;
-  parlay::sequence<FlowTy> flows = parlay::tabulate(G.m, [&](EdgeId i) {
-    return G.edges[i].w;
-  });
+  parlay::sequence<FlowTy> flows =
+      parlay::tabulate(G.m, [&](EdgeId i) { return G.edges[i].w; });
   for (int i = 0; i <= NUM_ROUND; i++) {
-    parlay::parallel_for(0, G.m, [&](EdgeId j) {
-      G.edges[j].w = flows[j];
-    });
+    parlay::parallel_for(0, G.m, [&](EdgeId j) { G.edges[j].w = flows[j]; });
     internal::timer tm;
     max_flow = algo.max_flow(s, t);
     tm.stop();
     if (i == 0) {
-      cout << "Warmup Round: " << tm.total_time() << endl;
+      cout << std::fixed << std::setprecision(6)
+           << "Warmup Round: " << tm.total_time() << endl;
     } else {
-      cout << "Round " << i << ": " << tm.total_time() << endl;
+      cout << std::fixed << std::setprecision(6) << "Round " << i << ": "
+           << tm.total_time() << endl;
       total_time += tm.total_time();
     }
     cout << "Max flow: " << max_flow << endl;
   }
   double average_time = total_time / NUM_ROUND;
-  cout << "Average time: " << average_time << endl;
+  cout << std::fixed << std::setprecision(6) << "Average time: " << average_time
+       << endl;
 
   ofstream ofs("push-relabel.tsv", ios_base::app);
   ofs << s << '\t' << t << '\t' << max_flow << '\t' << average_time << '\n';
@@ -157,6 +159,8 @@ void run(Algo &algo, Graph &G) {
 }
 
 int main(int argc, char *argv[]) {
+  quill::start();
+
   if (argc == 1) {
     cout << "Usage: " << argv[0] << " [-i input_file] [-s] [-a algorithm]\n"
          << "Options:\n"

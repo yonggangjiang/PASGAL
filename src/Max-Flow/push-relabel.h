@@ -1,9 +1,11 @@
+#include <parlay/delayed_sequence.h>
+#include <parlay/sequence.h>
+#include <quill/Quill.h>
+
 #include <queue>
 
 #include "graph.h"
 #include "hashbag.h"
-#include "parlay/delayed_sequence.h"
-#include "parlay/sequence.h"
 
 using namespace std;
 using namespace parlay;
@@ -121,11 +123,15 @@ class PushRelabel {
       return 0;
     }
     init(source);
+    int round = 0;
     while (true) {
       size_t frontier_size = bag.pack_into(frontier);
       if (frontier_size == 0) {
         break;
       }
+      LOG_INFO("Round {}: frontier size: {}", round, frontier_size);
+      round++;
+      // printf("Round %d: frontier size: %zu\n", round, frontier_size);
       parallel_for(0, frontier_size,
                    [&](size_t i) { in_frontier[frontier[i]] = false; });
       parallel_for(0, frontier_size, [&](size_t i) {

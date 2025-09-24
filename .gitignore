@@ -3,6 +3,7 @@
 !*.*
 !*/
 !Makefile
+build/
 
 # Output/debug files
 .vscode/
