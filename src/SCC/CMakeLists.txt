@@ -1,5 +1,8 @@
-pasgal_add_executable(scc ${CMAKE_CURRENT_LIST_DIR}/scc.cpp)
-pasgal_add_executable(tarjan ${CMAKE_CURRENT_LIST_DIR}/tarjan.cpp)
+add_executable(scc ${CMAKE_CURRENT_LIST_DIR}/scc.cpp)
+target_link_libraries(scc PRIVATE pasgal_common)
+
+add_executable(tarjan ${CMAKE_CURRENT_LIST_DIR}/tarjan.cpp)
+target_link_libraries(tarjan PRIVATE pasgal_common)
 
 if(PASGAL_ENABLE_PARLAY_SEQUENTIAL)
   add_executable(scc_seq ${CMAKE_CURRENT_LIST_DIR}/scc.cpp)
