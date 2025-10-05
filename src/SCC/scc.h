@@ -49,7 +49,7 @@ class SCC {
   }
   size_t scc_first(sequence<LabelT>&label){
     // auto degree_product = parlay::tabulate(G.n, [&](NodeId i){
-    //   return size_t(G.offsets[i+1]-G.offsets[i])*\
+    //   return size_t(G.offsets[i+1]-G.offsets[i])
     //           size_t(GT.offsets[i+1]-GT.offsets[i]);
     // });
     auto identities = parlay::delayed_tabulate(G.n,[&](NodeId i){return i;});

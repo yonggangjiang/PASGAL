@@ -9,7 +9,6 @@ build/
 .vscode/
 *.bak
 *.tsv
-*.txt
 *.py
 perf*
 
