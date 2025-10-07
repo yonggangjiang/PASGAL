@@ -16,8 +16,10 @@ We include the following four algorithms in our repository. The source code can 
 ## Compilation
 A Makefile is provided in each subdirectory. For example, to compile BFS:  
 ```bash
-cd src/BFS  
-make  
+mkdir build
+cd build
+cmake ..
+make
 ```
 
 ## Running the code
