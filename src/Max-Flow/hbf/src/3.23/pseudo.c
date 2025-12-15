@@ -374,6 +374,130 @@ namespace Reading
 		}
 	}
 
+	void read_binary_format(char const *filename)
+	{
+		int first = 0, last = 0;
+
+		struct stat sb;
+		int fd = open(filename, O_RDONLY);
+		if (fd == -1) {
+			std::cerr << "Error: Cannot open file " << filename << std::endl;
+			abort();
+		}
+		if (fstat(fd, &sb) == -1) {
+			std::cerr << "Error: Unable to acquire file stat" << std::endl;
+			abort();
+		}
+		char *data =
+			static_cast<char *>(mmap(0, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0));
+		size_t len = sb.st_size;
+
+		numNodes = reinterpret_cast<uint64_t *>(data)[0];
+		numArcs = reinterpret_cast<uint64_t *>(data)[1];
+
+		source = parlay::hash32(0) % numNodes + 1;
+    	sink = parlay::hash32(1) % numNodes + 1;
+
+		size_t sizes = reinterpret_cast<uint64_t *>(data)[2];
+
+		std::cout<<"Num nodes="<<numNodes<<", Num arcs="<<numArcs<<'\n';
+
+		adjacencyList = (Node *) malloc (numNodes * sizeof (Node));
+		strongRoots = (Root *) malloc (numNodes * sizeof (Root));
+		labelCount = (uint *) malloc (numNodes * sizeof (uint));
+		arcList = (Arc *) malloc (numArcs * sizeof (Arc));
+
+		for (int i=0; i<numNodes; ++i)
+		{
+			initializeRoot (&strongRoots[i]);
+			initializeNode (&adjacencyList[i], (i+1));
+			labelCount[i] = 0;
+		}
+
+		for (int i=0; i<numArcs; ++i)
+		{
+			initializeArc (&arcList[i]);
+		}
+
+		first = 0;
+		last = numArcs-1;
+
+		
+		assert(sizes == (numNodes + 1) * 8 + numArcs * 4 + 3 * 8);
+    	auto offsets = parlay::sequence<long long>::uninitialized(numNodes + 1);
+    	auto edges = parlay::sequence<std::pair<int, int>>::uninitialized(numArcs);
+
+		parlay::parallel_for(0, numNodes + 1, [&](size_t i) {
+      		offsets[i] = reinterpret_cast<uint64_t *>(data + 3 * 8)[i];
+    	});
+
+    	parlay::parallel_for(0, numArcs, [&](size_t i) {
+      		edges[i].first = reinterpret_cast<uint32_t *>(data + 3 * 8 + (numNodes + 1) * 8)[i];
+    	});
+
+
+		for(int from=0; from<numNodes; from++)
+		{
+			for(int i=offsets[from]; i<offsets[from+1]; i++)
+			{
+				int to = edges[i].first;
+				int capacity = 1; //todo edge weight generation
+
+				if ((from+to) % 2)
+				{
+					arcList[first].from = &adjacencyList[from];
+					arcList[first].to = &adjacencyList[to];
+					arcList[first].capacity = capacity;
+
+					++ first;
+				}
+				else 
+				{
+					arcList[last].from = &adjacencyList[from];
+					arcList[last].to = &adjacencyList[to];
+					arcList[last].capacity = capacity;
+					-- last;
+				}
+
+				++ adjacencyList[from].numAdjacent;
+				++ adjacencyList[to].numAdjacent;
+			}
+		}
+
+
+		for (int i=0; i<numNodes; ++i) 
+		{
+			createOutOfTree (&adjacencyList[i]);
+		}
+
+		for (int i=0; i<numArcs; i++) 
+		{
+			int to = arcList[i].to->number;
+			int from = arcList[i].from->number;
+			int capacity = arcList[i].capacity;
+
+			if (!((source == to) || (sink == from) || (from == to))) 
+			{
+				if ((source == from) && (to == sink)) 
+				{
+					arcList[i].flow = capacity;
+				}
+				else if (from == source)
+				{
+					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+				}
+				else if (to == sink)
+				{
+					addOutOfTreeNode (&adjacencyList[to-1], &arcList[i]);
+				}
+				else
+				{
+					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+				}
+			}
+		}
+	}
+
 	static void readDimacsFileCreateList (void) 
 	{
 		uint lineLength=1024, i, capacity, numLines = 0, from, to, first=0, last=0;
@@ -1385,7 +1509,8 @@ main(int argc, char ** argv)
 #endif
 
 	readStart = timer ();
-	Reading::read_pbbs_format("/data/graphs/bulgaria_wgh.adj");
+	Reading::read_binary_format("/data/graphs/CHEM_2.bin");
+	//Reading::read_pbbs_format("/data/graphs/CHEM_2_wgh.adj");
 	//Reading::readDimacsFileCreateList ();
 	readEnd=timer ();
 
