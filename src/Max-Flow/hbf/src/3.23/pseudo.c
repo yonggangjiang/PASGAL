@@ -70,7 +70,7 @@ typedef struct root
 
 //---------------  Global variables ------------------
 static uint numNodes = 0;
-static uint numArcs = 0;
+static ullint numArcs = 0;
 static uint source = 0;
 static uint sink = 0;
 
@@ -249,7 +249,7 @@ namespace Reading
 {
 	void read_pbbs_format(char const *filename)
 	{
-		int first = 0, last = 0;
+		uint first = 0, last = 0;
 
 		auto chars = parlay::chars_from_file(std::string(filename));
     	auto tokens_seq = tokens(chars);
@@ -269,14 +269,14 @@ namespace Reading
 		labelCount = (uint *) malloc (numNodes * sizeof (uint));
 		arcList = (Arc *) malloc (numArcs * sizeof (Arc));
 
-		for (int i=0; i<numNodes; ++i)
+		for (uint i=0; i<numNodes; ++i)
 		{
 			initializeRoot (&strongRoots[i]);
 			initializeNode (&adjacencyList[i], (i+1));
 			labelCount[i] = 0;
 		}
 
-		for (int i=0; i<numArcs; ++i)
+		for (uint i=0; i<numArcs; ++i)
 		{
 			initializeArc (&arcList[i]);
 		}
@@ -292,32 +292,32 @@ namespace Reading
 
 		assert(tokens_seq.size() == numNodes + numArcs + numArcs + 3);
 
-		auto offsets = parlay::sequence<int>(numNodes + 1);
-    	auto edges = parlay::sequence<std::pair<int, int>>(numArcs);
+		auto offsets = parlay::sequence<uint>(numNodes + 1);
+    	auto edges = parlay::sequence<std::pair<uint, uint>>(numArcs);
 
     	parlay::parallel_for(0, numNodes, [&](size_t i) {
-      		offsets[i] = parlay::internal::chars_to_int_t<int>(
+      		offsets[i] = parlay::internal::chars_to_int_t<uint>(
         	make_slice(tokens_seq[i + 3]));
     	});
 		offsets[numNodes] = numArcs;
 
 		parlay::parallel_for(0, numArcs, [&](size_t i) {
-      		edges[i].first = parlay::internal::chars_to_int_t<int>(
+      		edges[i].first = parlay::internal::chars_to_int_t<uint>(
           	make_slice(tokens_seq[i + numNodes + 3]));
     	});
 
 		parlay::parallel_for(0, numArcs, [&](size_t i) {
-      		edges[i].second = parlay::internal::chars_to_int_t<int>(
+      		edges[i].second = parlay::internal::chars_to_int_t<uint>(
           	make_slice(tokens_seq[i + numNodes + numArcs + 3]));
     	});
 
 		
-		for(int from=0; from<numNodes; from++)
+		for(uint from=0; from<numNodes; from++)
 		{
-			for(int i=offsets[from]; i<offsets[from+1]; i++)
+			for(uint i=offsets[from]; i<offsets[from+1]; i++)
 			{
-				int to = edges[i].first;
-				int capacity = edges[i].second;
+				uint to = edges[i].first;
+				uint capacity = edges[i].second;
 
 				if ((from+to) % 2)
 				{
@@ -341,16 +341,16 @@ namespace Reading
 		}
 
 
-		for (int i=0; i<numNodes; ++i) 
+		for (uint i=0; i<numNodes; ++i) 
 		{
 			createOutOfTree (&adjacencyList[i]);
 		}
 
-		for (int i=0; i<numArcs; i++) 
+		for (uint i=0; i<numArcs; i++) 
 		{
-			int to = arcList[i].to->number;
-			int from = arcList[i].from->number;
-			int capacity = arcList[i].capacity;
+			uint to = arcList[i].to->number;
+			uint from = arcList[i].from->number;
+			uint capacity = arcList[i].capacity;
 
 			if (!((source == to) || (sink == from) || (from == to))) 
 			{
@@ -376,10 +376,10 @@ namespace Reading
 
 	void read_binary_format(char const *filename)
 	{
-		int first = 0, last = 0;
+		uint first = 0, last = 0;
 
 		struct stat sb;
-		int fd = open(filename, O_RDONLY);
+		uint fd = open(filename, O_RDONLY);
 		if (fd == -1) {
 			std::cerr << "Error: Cannot open file " << filename << std::endl;
 			abort();
@@ -407,14 +407,14 @@ namespace Reading
 		labelCount = (uint *) malloc (numNodes * sizeof (uint));
 		arcList = (Arc *) malloc (numArcs * sizeof (Arc));
 
-		for (int i=0; i<numNodes; ++i)
+		for (uint i=0; i<numNodes; ++i)
 		{
 			initializeRoot (&strongRoots[i]);
 			initializeNode (&adjacencyList[i], (i+1));
 			labelCount[i] = 0;
 		}
 
-		for (int i=0; i<numArcs; ++i)
+		for (uint i=0; i<numArcs; ++i)
 		{
 			initializeArc (&arcList[i]);
 		}
@@ -425,7 +425,7 @@ namespace Reading
 		
 		assert(sizes == (numNodes + 1) * 8 + numArcs * 4 + 3 * 8);
     	auto offsets = parlay::sequence<long long>::uninitialized(numNodes + 1);
-    	auto edges = parlay::sequence<std::pair<int, int>>::uninitialized(numArcs);
+    	auto edges = parlay::sequence<std::pair<uint, uint>>::uninitialized(numArcs);
 
 		parlay::parallel_for(0, numNodes + 1, [&](size_t i) {
       		offsets[i] = reinterpret_cast<uint64_t *>(data + 3 * 8)[i];
@@ -436,12 +436,12 @@ namespace Reading
     	});
 
 
-		for(int from=0; from<numNodes; from++)
+		for(uint from=0; from<numNodes; from++)
 		{
-			for(int i=offsets[from]; i<offsets[from+1]; i++)
+			for(uint i=offsets[from]; i<offsets[from+1]; i++)
 			{
-				int to = edges[i].first;
-				int capacity = 1; //todo edge weight generation
+				uint to = edges[i].first;
+				uint capacity = 1; //todo edge weight generation
 
 				if ((from+to) % 2)
 				{
@@ -465,16 +465,16 @@ namespace Reading
 		}
 
 
-		for (int i=0; i<numNodes; ++i) 
+		for (uint i=0; i<numNodes; ++i) 
 		{
 			createOutOfTree (&adjacencyList[i]);
 		}
 
-		for (int i=0; i<numArcs; i++) 
+		for (uint i=0; i<numArcs; i++) 
 		{
-			int to = arcList[i].to->number;
-			int from = arcList[i].from->number;
-			int capacity = arcList[i].capacity;
+			uint to = arcList[i].to->number;
+			uint from = arcList[i].from->number;
+			uint capacity = arcList[i].capacity;
 
 			if (!((source == to) || (sink == from) || (from == to))) 
 			{
@@ -495,6 +495,31 @@ namespace Reading
 					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
 				}
 			}
+		}
+	}
+
+	void read_graph(const char* filename)
+	{
+		std::string str_filename(filename);
+		
+		size_t idx = str_filename.find_last_of('.');
+
+		if (idx == std::string::npos) {
+			std::cerr << "Error: No graph extension provided" << std::endl;
+			abort();
+		}
+
+		std::string subfix = str_filename.substr(idx + 1);
+		
+		if (subfix == "adj") {
+			read_pbbs_format(filename);
+		} 
+		else if (subfix == "bin") {
+			read_binary_format(filename);
+		} 
+		else {
+			std::cerr << "Error: Invalid graph extension" << std::endl;
+			abort();
 		}
 	}
 
@@ -1509,8 +1534,18 @@ main(int argc, char ** argv)
 #endif
 
 	readStart = timer ();
-	Reading::read_binary_format("/data/graphs/CHEM_2.bin");
+
+	if(argc < 2)
+	{
+		std::cout<<"Missing input file";
+		exit(0);
+	}
+
+	Reading::read_graph(argv[1]);
+
+	//Reading::read_binary_format("/data/graphs/CHEM_2.bin");
 	//Reading::read_pbbs_format("/data/graphs/CHEM_2_wgh.adj");
+
 	//Reading::readDimacsFileCreateList ();
 	readEnd=timer ();
 
