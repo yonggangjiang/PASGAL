@@ -249,6 +249,8 @@ namespace Reading
 {
 	void read_pbbs_format(char const *filename)
 	{
+		int first = 0, last = 0;
+
 		auto chars = parlay::chars_from_file(std::string(filename));
     	auto tokens_seq = tokens(chars);
 
@@ -256,7 +258,120 @@ namespace Reading
     	numNodes = chars_to_ulong_long(tokens_seq[1]);
     	numArcs = chars_to_ulong_long(tokens_seq[2]);
 
-		std::cout<<numNodes<<' '<<numArcs<<'\n';
+		source = parlay::hash32(0) % numNodes + 1;
+    	sink = parlay::hash32(1) % numNodes + 1;
+
+		std::cout<<"Num nodes="<<numNodes<<", Num arcs="<<numArcs
+					<<", source="<<source-1<<", sink="<<sink-1<<'\n';
+
+		adjacencyList = (Node *) malloc (numNodes * sizeof (Node));
+		strongRoots = (Root *) malloc (numNodes * sizeof (Root));
+		labelCount = (uint *) malloc (numNodes * sizeof (uint));
+		arcList = (Arc *) malloc (numArcs * sizeof (Arc));
+
+		for (int i=0; i<numNodes; ++i)
+		{
+			initializeRoot (&strongRoots[i]);
+			initializeNode (&adjacencyList[i], (i+1));
+			labelCount[i] = 0;
+		}
+
+		for (int i=0; i<numArcs; ++i)
+		{
+			initializeArc (&arcList[i]);
+		}
+
+		first = 0;
+		last = numArcs-1;
+
+		if(header != parlay::to_chars("WeightedAdjacencyGraph"))
+		{
+			std::cerr<<"not weigthed\n";
+			assert(false);
+		}
+
+		assert(tokens_seq.size() == numNodes + numArcs + numArcs + 3);
+
+		auto offsets = parlay::sequence<int>(numNodes + 1);
+    	auto edges = parlay::sequence<std::pair<int, int>>(numArcs);
+
+    	parlay::parallel_for(0, numNodes, [&](size_t i) {
+      		offsets[i] = parlay::internal::chars_to_int_t<int>(
+        	make_slice(tokens_seq[i + 3]));
+    	});
+		offsets[numNodes] = numArcs;
+
+		parlay::parallel_for(0, numArcs, [&](size_t i) {
+      		edges[i].first = parlay::internal::chars_to_int_t<int>(
+          	make_slice(tokens_seq[i + numNodes + 3]));
+    	});
+
+		parlay::parallel_for(0, numArcs, [&](size_t i) {
+      		edges[i].second = parlay::internal::chars_to_int_t<int>(
+          	make_slice(tokens_seq[i + numNodes + numArcs + 3]));
+    	});
+
+		
+		for(int from=0; from<numNodes; from++)
+		{
+			for(int i=offsets[from]; i<offsets[from+1]; i++)
+			{
+				int to = edges[i].first;
+				int capacity = edges[i].second;
+
+				if ((from+to) % 2)
+				{
+					arcList[first].from = &adjacencyList[from];
+					arcList[first].to = &adjacencyList[to];
+					arcList[first].capacity = capacity;
+
+					++ first;
+				}
+				else 
+				{
+					arcList[last].from = &adjacencyList[from];
+					arcList[last].to = &adjacencyList[to];
+					arcList[last].capacity = capacity;
+					-- last;
+				}
+
+				++ adjacencyList[from].numAdjacent;
+				++ adjacencyList[to].numAdjacent;
+			}
+		}
+
+
+		for (int i=0; i<numNodes; ++i) 
+		{
+			createOutOfTree (&adjacencyList[i]);
+		}
+
+		for (int i=0; i<numArcs; i++) 
+		{
+			int to = arcList[i].to->number;
+			int from = arcList[i].from->number;
+			int capacity = arcList[i].capacity;
+
+			if (!((source == to) || (sink == from) || (from == to))) 
+			{
+				if ((source == from) && (to == sink)) 
+				{
+					arcList[i].flow = capacity;
+				}
+				else if (from == source)
+				{
+					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+				}
+				else if (to == sink)
+				{
+					addOutOfTreeNode (&adjacencyList[to-1], &arcList[i]);
+				}
+				else
+				{
+					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+				}
+			}
+		}
 	}
 
 	static void readDimacsFileCreateList (void) 
@@ -1270,7 +1385,8 @@ main(int argc, char ** argv)
 #endif
 
 	readStart = timer ();
-	Reading::readDimacsFileCreateList ();
+	Reading::read_pbbs_format("/data/graphs/bulgaria_wgh.adj");
+	//Reading::readDimacsFileCreateList ();
 	readEnd=timer ();
 
 #ifdef PROGRESS
