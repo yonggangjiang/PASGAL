@@ -24,6 +24,9 @@ typedef long int lint;
 typedef long long int llint;
 typedef unsigned long long int ullint;
 
+constexpr int LOG2_WEIGHT = 6;
+constexpr int WEIGHT_RANGE = 1 << LOG2_WEIGHT;
+
 double 
 timer (void)
 {
@@ -69,8 +72,10 @@ typedef struct root
 } Root;
 
 //---------------  Global variables ------------------
+bool weighted = false;
+
 static uint numNodes = 0;
-static ullint numArcs = 0;
+static ullint numArcs = 0;	
 static uint source = 0;
 static uint sink = 0;
 
@@ -284,11 +289,8 @@ namespace Reading
 		first = 0;
 		last = numArcs-1;
 
-		if(header != parlay::to_chars("WeightedAdjacencyGraph"))
-		{
-			std::cerr<<"not weigthed\n";
-			assert(false);
-		}
+		if(header == parlay::to_chars("WeightedAdjacencyGraph"))
+			weighted = true;
 
 		assert(tokens_seq.size() == numNodes + numArcs + numArcs + 3);
 
@@ -305,11 +307,29 @@ namespace Reading
       		edges[i].first = parlay::internal::chars_to_int_t<uint>(
           	make_slice(tokens_seq[i + numNodes + 3]));
     	});
+		
+		if(weighted)
+		{
+			parlay::parallel_for(0, numArcs, [&](size_t i) {
+      			edges[i].second = parlay::internal::chars_to_int_t<uint>(
+          		make_slice(tokens_seq[i + numNodes + numArcs + 3]));
+    		});
+		}
+		else
+		{
+			uint l = 1;
+			uint r = WEIGHT_RANGE;
+			uint range = r - l + 1;
 
-		parlay::parallel_for(0, numArcs, [&](size_t i) {
-      		edges[i].second = parlay::internal::chars_to_int_t<uint>(
-          	make_slice(tokens_seq[i + numNodes + numArcs + 3]));
-    	});
+			parlay::parallel_for(0, numNodes, [&](uint u) {
+				parlay::parallel_for(offsets[u], offsets[u + 1], [&](uint i) {
+					uint v = edges[i].first;
+					edges[i].second = ((parlay::hash32(u) ^ parlay::hash32(v)) % range) + l;
+				});
+    		});
+
+			weighted = true;
+		}
 
 		
 		for(uint from=0; from<numNodes; from++)
@@ -376,6 +396,8 @@ namespace Reading
 
 	void read_binary_format(char const *filename)
 	{
+		weighted = false;
+
 		uint first = 0, last = 0;
 
 		struct stat sb;
@@ -400,7 +422,8 @@ namespace Reading
 
 		size_t sizes = reinterpret_cast<uint64_t *>(data)[2];
 
-		std::cout<<"Num nodes="<<numNodes<<", Num arcs="<<numArcs<<'\n';
+		std::cout<<"Num nodes="<<numNodes<<", Num arcs="<<numArcs
+					<<", source="<<source-1<<", sink="<<sink-1<<'\n';
 
 		adjacencyList = (Node *) malloc (numNodes * sizeof (Node));
 		strongRoots = (Root *) malloc (numNodes * sizeof (Root));
@@ -434,14 +457,28 @@ namespace Reading
     	parlay::parallel_for(0, numArcs, [&](size_t i) {
       		edges[i].first = reinterpret_cast<uint32_t *>(data + 3 * 8 + (numNodes + 1) * 8)[i];
     	});
+		
+		
+		std::cout<<"Generating edge weights\n";
+		uint l = 1;
+		uint r = WEIGHT_RANGE;
+		uint range = r - l + 1;
 
+		parlay::parallel_for(0, numNodes, [&](uint u) {
+			parlay::parallel_for(offsets[u], offsets[u + 1], [&](uint i) {
+				uint v = edges[i].first;
+				edges[i].second = ((parlay::hash32(u) ^ parlay::hash32(v)) % range) + l;
+			});
+    	});
+
+		weighted = true;
 
 		for(uint from=0; from<numNodes; from++)
 		{
 			for(uint i=offsets[from]; i<offsets[from+1]; i++)
 			{
 				uint to = edges[i].first;
-				uint capacity = 1; //todo edge weight generation
+				uint capacity = edges[i].second;
 
 				if ((from+to) % 2)
 				{
@@ -521,8 +558,12 @@ namespace Reading
 			std::cerr << "Error: Invalid graph extension" << std::endl;
 			abort();
 		}
+
+		assert(weighted);
 	}
 
+	/*
+	//initial input function, kept for reference
 	static void readDimacsFileCreateList (void) 
 	{
 		uint lineLength=1024, i, capacity, numLines = 0, from, to, first=0, last=0;
@@ -676,6 +717,7 @@ namespace Reading
 		free (word);
 		word = NULL;
 	}
+	*/
 }
 
 
