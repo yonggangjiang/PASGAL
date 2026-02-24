@@ -70,12 +70,7 @@ typedef struct node
 	struct node *next;
 } Node;
 
-
-typedef struct root 
-{
-	Node *start;
-	Node *end;
-} Root;
+typedef parlay::sequence<Node*> Root;
 
 //---------------  Global variables ------------------
 bool weighted = false;
@@ -158,21 +153,6 @@ initializeNode (Node *nd, const uint n)
 }
 
 static void
-initializeRoot (Root *rt) 
-{
-	rt->start = NULL;
-	rt->end = NULL;
-}
-
-
-static void
-freeRoot (Root *rt) 
-{
-	rt->start = NULL;
-	rt->end = NULL;
-}
-
-static void
 liftAll (Node *rootNode) 
 {
 	Node *temp, *current=rootNode;
@@ -201,8 +181,7 @@ static void
 addToStrongBucket (Node *newRoot, Root *rootBucket) 
 {	
     ++strongRootCount;
-    newRoot->next = rootBucket->start;
-    rootBucket->start = newRoot;
+    rootBucket->push_back(newRoot);
 }
 
 static void
@@ -255,13 +234,12 @@ namespace Reading
 					<<", source="<<source-1<<", sink="<<sink-1<<'\n';
 
 		adjacencyList = (Node *) malloc (numNodes * sizeof (Node));
-		strongRoots = (Root *) malloc (numNodes * sizeof (Root));
+		strongRoots = new Root[numNodes]();
 		labelCount = (uint *) malloc (numNodes * sizeof (uint));
 		arcList = (Arc *) malloc (numArcs * sizeof (Arc));
 
 		for (uint i=0; i<numNodes; ++i)
 		{
-			initializeRoot (&strongRoots[i]);
 			initializeNode (&adjacencyList[i], (i+1));
 			labelCount[i] = 0;
 		}
@@ -411,13 +389,12 @@ namespace Reading
 					<<", source="<<source-1<<", sink="<<sink-1<<'\n';
 
 		adjacencyList = (Node *) malloc (numNodes * sizeof (Node));
-		strongRoots = (Root *) malloc (numNodes * sizeof (Root));
+		strongRoots = new Root[numNodes]();
 		labelCount = (uint *) malloc (numNodes * sizeof (uint));
 		arcList = (Arc *) malloc (numArcs * sizeof (Arc));
 
 		for (uint i=0; i<numNodes; ++i)
 		{
-			initializeRoot (&strongRoots[i]);
 			initializeNode (&adjacencyList[i], (i+1));
 			labelCount[i] = 0;
 		}
@@ -558,11 +535,7 @@ namespace Reading
 					exit (1);
 				}
 
-				if ((strongRoots = (Root *) malloc (numNodes * sizeof (Root))) == NULL)
-				{
-					printf ("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
-					exit (1);
-				}
+				strongRoots = new Root[numNodes]();
 
 				if ((labelCount = (uint *) malloc (numNodes * sizeof (uint))) == NULL)
 				{
@@ -578,7 +551,6 @@ namespace Reading
 
 				for (i=0; i<numNodes; ++i)
 				{
-					initializeRoot (&strongRoots[i]);
 					initializeNode (&adjacencyList[i], (i+1));
 					labelCount[i] = 0;
 				}
@@ -1011,41 +983,43 @@ getHighestStrongRoot (void)
 
     for (i=highestStrongLabel; i>0; --i) 
     {
-        if (strongRoots[i].start)  
+        if (!strongRoots[i].empty())  
         {
             highestStrongLabel = i;
             if (labelCount[i-1]) 
             {
-                strongRoot = strongRoots[i].start;
-                strongRoots[i].start = strongRoot->next;
+                strongRoot = strongRoots[i].back();
+				strongRoots[i].pop_back();
+
                 strongRoot->next = NULL;
 				--strongRootCount;
                 return strongRoot;				
             }
 
-            while (strongRoots[i].start) 
+            while (!strongRoots[i].empty()) 
             {
 
 #ifdef STATS
                 ++ numGaps;
 #endif
-                strongRoot = strongRoots[i].start;
-                strongRoots[i].start = strongRoot->next;
+                strongRoot = strongRoots[i].back();
+                strongRoots[i].pop_back();
+
 				--strongRootCount;
                 liftAll (strongRoot);
             }
         }
     }
 
-    if (!strongRoots[0].start) 
+    if (strongRoots[0].empty()) 
     {
         return NULL;
     }
 
-    while (strongRoots[0].start) 
+    while (!strongRoots[0].empty()) 
     {
-        strongRoot = strongRoots[0].start;
-        strongRoots[0].start = strongRoot->next;
+        strongRoot = strongRoots[0].back();
+        strongRoots[0].pop_back();
         --strongRootCount;
         strongRoot->label = 1;
         -- labelCount[0];
@@ -1059,8 +1033,8 @@ getHighestStrongRoot (void)
     }
     highestStrongLabel = 1;
 
-    strongRoot = strongRoots[1].start;
-    strongRoots[1].start = strongRoot->next;
+    strongRoot = strongRoots[1].back();
+    strongRoots[1].pop_back();
 	--strongRootCount;
     strongRoot->next = NULL;
 
@@ -1088,15 +1062,7 @@ long long countRoots(void)
 
 long long countHighestLabelRoots(void)
 {
-	long long count = 0;
-	Node* current = strongRoots[highestStrongLabel].start;
-	while (current)
-    {
-        ++count;
-        current = current->next;
-    }
-
-	return count;
+	return strongRoots[highestStrongLabel].size();
 }
 
 static void
@@ -1120,10 +1086,10 @@ pseudoflowPhase1 (void)
 		std::vector<Node*> currentHighRoots;
 		currentHighRoots.push_back(strongRoot);
 
-		while(strongRoots[currentHighLabel].start)
+		while(!strongRoots[currentHighLabel].empty())
         {
-            Node* nextStrongRoot = strongRoots[currentHighLabel].start;
-            strongRoots[currentHighLabel].start = nextStrongRoot->next;
+            Node* nextStrongRoot = strongRoots[currentHighLabel].back();
+            strongRoots[currentHighLabel].pop_back();
             --strongRootCount;
             nextStrongRoot->next = NULL;
             currentHighRoots.push_back(nextStrongRoot);
@@ -1142,14 +1108,14 @@ pseudoflowPhase1 (void)
 		
 		// Update highestStrongLabel AFTER processing all roots
         // Find the new highest non-empty bucket
-        while (highestStrongLabel > 0 && !strongRoots[highestStrongLabel].start)
+        while (highestStrongLabel > 0 && strongRoots[highestStrongLabel].empty())
         {
             --highestStrongLabel;
         }
         // Check if any roots were relabeled higher
         for (uint i = highestStrongLabel + 1; i <= currentHighLabel + 1; ++i)
         {
-            if (strongRoots[i].start)
+            if (!strongRoots[i].empty())
             {
                 highestStrongLabel = i;
             }
@@ -1166,8 +1132,6 @@ pseudoflowPhase1 (void)
 		//printf("round %lld\n", round);
 		//processRoot (strongRoot);
 	}
-
-	std::printf("se fini\n");
 
 	#ifdef STATS_2
 		std::printf("data, average number of roots: %Lf\n", (long double)sumNrRoots / (long double)round);
@@ -1537,12 +1501,7 @@ freeMemory (void)
 {
 	uint i;
 
-	for (i=0; i<numNodes; ++i)
-	{
-		freeRoot (&strongRoots[i]);
-	}
-
-	free (strongRoots);
+	delete[] strongRoots;
 
 	for (i=0; i<numNodes; ++i)
 	{
