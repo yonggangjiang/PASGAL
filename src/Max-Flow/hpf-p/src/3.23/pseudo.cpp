@@ -1,3 +1,4 @@
+//#define STATS true
 //#define STATS_2 true
 
 #include <stdio.h>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <type_traits>
 #include <vector>
+#include <chrono>
 
 #include "parlay/io.h"
 #include "parlay/parallel.h"
@@ -23,6 +25,8 @@
 
 #include <mutex>
 #include "../../../../utils.h"
+#include "../../../../hashbag.h"
+#include "parlay_hashmap.h"
 
 
 typedef unsigned int uint;
@@ -33,13 +37,10 @@ typedef unsigned long long int ullint;
 constexpr int LOG2_WEIGHT = 6;
 constexpr int WEIGHT_RANGE = 1 << LOG2_WEIGHT;
 
-double 
-timer (void)
-{
-  struct rusage r;
-
-  getrusage(0, &r);
-  return (double) (r.ru_utime.tv_sec + r.ru_utime.tv_usec / (double)1000000);
+double timer(void) {
+  using namespace std::chrono;
+  auto now = steady_clock::now();
+  return duration<double>(now.time_since_epoch()).count();
 }
 
 struct node;
@@ -90,8 +91,15 @@ static long long strongRootCount = 0;
 //-----------------------------------------------------
 
 //---------------  Sync variables ---------------------
-std::mutex global_mutex;
+parlay::sequence<bool> *is_busy;
+hashbag<uint> *busy_nodes;
+
+hashbag<uint> *roots_to_add;
 //-----------------------------------------------------
+
+std::vector<uint> numHighestLabelVec;
+std::vector<double> roundTimeVec;
+std::vector<ullint> numArcScansVec;
 
 #ifdef STATS
 static ullint numPushes = 0;
@@ -390,6 +398,9 @@ namespace Reading
 
 		adjacencyList = (Node *) malloc (numNodes * sizeof (Node));
 		strongRoots = new Root[numNodes]();
+		is_busy = new parlay::sequence<bool>(numNodes);
+		busy_nodes = new hashbag<uint>(numNodes);
+		roots_to_add = new hashbag<uint>(numNodes);
 		labelCount = (uint *) malloc (numNodes * sizeof (uint));
 		arcList = (Arc *) malloc (numArcs * sizeof (Arc));
 
@@ -536,6 +547,9 @@ namespace Reading
 				}
 
 				strongRoots = new Root[numNodes]();
+				is_busy = new parlay::sequence<bool>(numNodes);
+				busy_nodes = new hashbag<uint>(numNodes);
+				roots_to_add = new hashbag<uint>(numNodes);
 
 				if ((labelCount = (uint *) malloc (numNodes * sizeof (uint))) == NULL)
 				{
@@ -724,6 +738,14 @@ simpleInitialization (void)
 	labelCount[0] = (numNodes - 2) - labelCount[1];
 }
 
+static inline Node* getRoot(Node *nd) 
+{
+	while (nd->parent) 
+		nd = nd->parent;
+
+	return nd;
+}
+
 static inline int 
 addRelationship (Node *newParent, Node *child) 
 {
@@ -805,7 +827,8 @@ pushUpward (Arc *currentArc, Node *child, Node *parent, const uint resCap)
 	++ parent->numOutOfTree;
 	breakRelationship (parent, child);
 
-	addToStrongBucket (child, &strongRoots[child->label]);
+	roots_to_add->insert(child->number);
+	//addToStrongBucket (child, &strongRoots[child->label]);
 }
 
 
@@ -832,7 +855,8 @@ pushDownward (Arc *currentArc, Node *child, Node *parent, uint flow)
 	++ parent->numOutOfTree;
 	breakRelationship (parent, child);
 
-	addToStrongBucket (child, &strongRoots[child->label]);
+	roots_to_add->insert(child->number);
+	//addToStrongBucket (child, &strongRoots[child->label]);
 }
 
 static void
@@ -861,16 +885,32 @@ pushExcess (Node *strongRoot)
 
 	if ((current->excess > 0) && (prevEx <= 0))
 	{
-		addToStrongBucket (current, &strongRoots[current->label]);
+		roots_to_add->insert(current->number);
+		//addToStrongBucket (current, &strongRoots[current->label]);
 	}
 }
 
+bool can_push(Node* y)
+{
+	//return true;
+
+	assert(y != NULL);
+	if(compare_and_swap(&((*is_busy)[y->number - 1]), false, true))
+	{
+		busy_nodes->insert(y->number);
+		return true;
+	}
+
+	return false;
+}
 
 static Arc *
-findWeakNode (Node *strongNode, Node **weakNode) 
+findWeakNode (Node *strongNode, Node **weakNode, bool &skipped_arc) 
 {
 	uint i, size;
 	Arc *out;
+
+	uint firstSkippedArc = UINT_MAX;
 
 	size = strongNode->numOutOfTree;
 
@@ -881,18 +921,32 @@ findWeakNode (Node *strongNode, Node **weakNode)
 		++ numArcScans;
 #endif
 
-		if (strongNode->outOfTree[i]->to->label == (highestStrongLabel-1)) 
+		if (strongNode->outOfTree[i]->to->label == (highestStrongLabel-1))
 		{
-			strongNode->nextArc = i;
+			if(!can_push(getRoot(strongNode->outOfTree[i]->to)))
+			{
+				skipped_arc = true;
+				firstSkippedArc = std::min(firstSkippedArc, i);
+				continue;
+			}
+
+			strongNode->nextArc = std::min(i, firstSkippedArc);
 			out = strongNode->outOfTree[i];
 			(*weakNode) = out->to;
 			-- strongNode->numOutOfTree;
 			strongNode->outOfTree[i] = strongNode->outOfTree[strongNode->numOutOfTree];
 			return (out);
 		}
-		else if (strongNode->outOfTree[i]->from->label == (highestStrongLabel-1)) 
+		else if (strongNode->outOfTree[i]->from->label == (highestStrongLabel-1	))
 		{
-			strongNode->nextArc = i;
+			if(!can_push(getRoot(strongNode->outOfTree[i]->from)))
+			{
+				skipped_arc = true;
+				firstSkippedArc = std::min(firstSkippedArc, i);
+				continue;
+			}
+
+			strongNode->nextArc = std::min(i, firstSkippedArc);
 			out = strongNode->outOfTree[i];
 			(*weakNode) = out->from;
 			-- strongNode->numOutOfTree;
@@ -901,7 +955,9 @@ findWeakNode (Node *strongNode, Node **weakNode)
 		}
 	}
 
-	strongNode->nextArc = strongNode->numOutOfTree;
+	strongNode->nextArc = std::min(firstSkippedArc,  strongNode->numOutOfTree);
+
+	if(skipped_arc) strongNode->nextArc = 0;
 
 	return NULL;
 }
@@ -935,17 +991,18 @@ processRoot (Node *strongRoot)
 {
 	Node *temp, *strongNode = strongRoot, *weakNode;
 	Arc *out;
+	bool skipped_arc = false;
 
 	strongRoot->nextScan = strongRoot->childList;
 
-	if ((out = findWeakNode (strongRoot, &weakNode)))
+	if ((out = findWeakNode (strongRoot, &weakNode, skipped_arc)))
 	{
 		merge (weakNode, strongNode, out);
 		pushExcess (strongRoot);
 		return;
 	}
 
-	checkChildren (strongRoot);
+	if(!skipped_arc) checkChildren (strongRoot);
 	
 	while (strongNode)
 	{
@@ -956,23 +1013,25 @@ processRoot (Node *strongRoot)
 			strongNode = temp;
 			strongNode->nextScan = strongNode->childList;
 
-			if ((out = findWeakNode (strongNode, &weakNode)))
+			if ((out = findWeakNode (strongNode, &weakNode, skipped_arc	)))
 			{
 				merge (weakNode, strongNode, out);
 				pushExcess (strongRoot);
 				return;
 			}
 
-			checkChildren (strongNode);
+			if(!skipped_arc) checkChildren (strongNode);
 		}
 
 		if ((strongNode = strongNode->parent))
 		{
-			checkChildren (strongNode);
+			if(!skipped_arc) checkChildren (strongNode);
 		}
 	}
 
-	addToStrongBucket (strongRoot, &strongRoots[strongRoot->label]);
+	roots_to_add->insert(strongRoot->number);
+	//addToStrongBucket (strongRoot, &strongRoots[strongRoot->label]);
+	return;
 }
 
 static Node *
@@ -1044,20 +1103,6 @@ getHighestStrongRoot (void)
 long long countRoots(void)
 {
 	return strongRootCount;
-
-	/*
-	long long count = 0;
-    for (uint i = 0; i <= highestStrongLabel; ++i)
-    {
-        Node *current = strongRoots[i].start;
-        while (current)
-        {
-            ++count;
-            current = current->next;
-        }
-    }
-    return count;
-	*/
 }
 
 long long countHighestLabelRoots(void)
@@ -1070,16 +1115,13 @@ pseudoflowPhase1 (void)
 {
 	Node *strongRoot;
 	long long round = 0;
-	long long sumNrRoots = 0;
-	long long sumNrHighRoots = 0;
 
 	while ((strongRoot = getHighestStrongRoot ()))  
 	{
 		round++;
 
 		#ifdef STATS_2
-			sumNrRoots += countRoots();
-			sumNrHighRoots += countHighestLabelRoots();
+			numArcScans = 0;
 		#endif
 
 		int currentHighLabel = strongRoot->label;
@@ -1095,16 +1137,37 @@ pseudoflowPhase1 (void)
             currentHighRoots.push_back(nextStrongRoot);
         }
 
-		for(auto it : currentHighRoots)
-			processRoot(it);
-	
-		/*
+		#ifdef STATS_2
+			numHighestLabelVec.push_back(currentHighRoots.size());
+		#endif
+
+		#ifdef STATS_2
+			auto timeStart = timer();
+		#endif
+		
 		parlay::parallel_for(0, currentHighRoots.size(), [&](size_t i) {
-			global_mutex.lock();
 			processRoot(currentHighRoots[i]);
-			global_mutex.unlock();
 		});
-		*/
+
+		#ifdef STATS_2
+			auto timeEnd = timer();
+		#endif
+
+		//add the necessary roots to the strong buckets after processing all of them in parallel
+		parlay::sequence<uint> rootsToAddSeq(numNodes);
+		size_t numRootsToAdd = roots_to_add->pack_into(rootsToAddSeq);
+		for(size_t i = 0; i < numRootsToAdd; i++) {
+			uint it = rootsToAddSeq[i];
+			addToStrongBucket(&adjacencyList[it - 1], &strongRoots[adjacencyList[it - 1].label]);
+		}
+		
+		//statistics collection
+		#ifdef STATS_2
+			roundTimeVec.push_back(timeEnd - timeStart);
+			numArcScansVec.push_back(numArcScans);
+		#endif
+
+	
 		
 		// Update highestStrongLabel AFTER processing all roots
         // Find the new highest non-empty bucket
@@ -1120,22 +1183,51 @@ pseudoflowPhase1 (void)
                 highestStrongLabel = i;
             }
         }
-
-		/*
-		parlay::parallel_for(0, currentHighRoots.size(), [&](size_t i) {
-			global_mutex.lock();
-			processRoot(currentHighRoots[i]);
-			global_mutex.unlock();
-		});
-		*/
 		
-		//printf("round %lld\n", round);
-		//processRoot (strongRoot);
+		//clear the busy vector for the next round
+		parlay::sequence<uint> busyNodesSeq(numNodes);
+		size_t numBusyNodes = busy_nodes->pack_into(busyNodesSeq);
+
+		for(size_t i = 0; i < numBusyNodes; i++)
+			(*is_busy)[busyNodesSeq[i] - 1] = false;
 	}
 
 	#ifdef STATS_2
-		std::printf("data, average number of roots: %Lf\n", (long double)sumNrRoots / (long double)round);
-		std::printf("data, average number of high roots: %Lf\n", (long double)sumNrHighRoots / (long double)round);
+		int buckets = 10;
+
+		std::cout<< "data, Total rounds = " << round << "\n";
+		for(int i=0; i<buckets; i++)
+		{
+			int bucket_size = (round + buckets - 1) / buckets;
+			int start = i * bucket_size;
+			int end = std::min(start + bucket_size, (int)numHighestLabelVec.size());
+			long long sum = 0;
+			for(int j=start; j<end; j++)
+				sum += numHighestLabelVec[j];
+			std::cout << "data, Bucket " << i << ": Average highest label count = " << ((long double)sum / (long double)(end - start)) << "\n";
+		}
+
+		for(int i=0; i<buckets; i++)
+		{
+			int bucket_size = (round + buckets - 1) / buckets;
+			int start = i * bucket_size;
+			int end = std::min(start + bucket_size, (int)roundTimeVec.size());
+			double sum = 0;
+			for(int j=start; j<end; j++)
+				sum += roundTimeVec[j];
+			std::cout << "data, Bucket " << i << ": Total round time = " << sum << " seconds\n";
+		}
+
+		for(int i=0; i<buckets; i++)
+		{
+			int bucket_size = (round + buckets - 1) / buckets;
+			int start = i * bucket_size;
+			int end = std::min(start + bucket_size, (int)roundTimeVec.size());
+			long long sum = 0;
+			for(int j=start; j<end; j++)
+				sum += numArcScansVec[j];
+			std::cout << "data, Bucket " << i << ": Average number of arc scans = " << ((long double)sum / (long double)(end - start)) << "\n";
+		}
 	#endif
 }
 
