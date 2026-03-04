@@ -911,6 +911,7 @@ findWeakNode (Node *strongNode, Node **weakNode, bool &skipped_arc)
 	Arc *out;
 
 	uint firstSkippedArc = UINT_MAX;
+	uint begining = strongNode->nextArc;
 
 	size = strongNode->numOutOfTree;
 
@@ -955,16 +956,17 @@ findWeakNode (Node *strongNode, Node **weakNode, bool &skipped_arc)
 		}
 	}
 
-	strongNode->nextArc = std::min(firstSkippedArc,  strongNode->numOutOfTree);
-
-	if(skipped_arc) strongNode->nextArc = 0;
+	if(!skipped_arc) 
+		strongNode->nextArc = strongNode->numOutOfTree;
+	else
+		strongNode->nextArc = firstSkippedArc;
 
 	return NULL;
 }
 
 
 static void
-checkChildren (Node *curNode) 
+checkChildren (Node *curNode, bool skipped_arc) 
 {
 	for ( ; (curNode->nextScan); curNode->nextScan = curNode->nextScan->next)
 	{
@@ -975,15 +977,18 @@ checkChildren (Node *curNode)
 		
 	}	
 
-	write_add(&labelCount[curNode->label], -1);
-	++	curNode->label;
-	write_add(&labelCount[curNode->label], 1);
+	if(!skipped_arc)
+	{
+		write_add(&labelCount[curNode->label], -1);
+		++	curNode->label;
+		write_add(&labelCount[curNode->label], 1);
 
-#ifdef STATS
-	++ numRelabels;
-#endif
+	#ifdef STATS
+		++ numRelabels;
+	#endif
 
-	curNode->nextArc = 0;
+		curNode->nextArc = 0;
+	}
 }
 
 static void
@@ -1002,7 +1007,7 @@ processRoot (Node *strongRoot)
 		return;
 	}
 
-	if(!skipped_arc) checkChildren (strongRoot);
+	checkChildren (strongRoot, skipped_arc);
 	
 	while (strongNode)
 	{
@@ -1020,12 +1025,12 @@ processRoot (Node *strongRoot)
 				return;
 			}
 
-			if(!skipped_arc) checkChildren (strongNode);
+			checkChildren (strongNode, skipped_arc);
 		}
 
 		if ((strongNode = strongNode->parent))
 		{
-			if(!skipped_arc) checkChildren (strongNode);
+			checkChildren (strongNode, skipped_arc);
 		}
 	}
 
@@ -1119,39 +1124,41 @@ pseudoflowPhase1 (void)
 	while ((strongRoot = getHighestStrongRoot ()))  
 	{
 		round++;
+		int currentHighLabel = strongRoot->label;
 
 		#ifdef STATS_2
 			numArcScans = 0;
 		#endif
 
-		int currentHighLabel = strongRoot->label;
-		std::vector<Node*> currentHighRoots;
-		currentHighRoots.push_back(strongRoot);
+		if(strongRoots[currentHighLabel].size() >= 0)
+		{
+			std::vector<Node*> currentHighRoots;
+			currentHighRoots.push_back(strongRoot);
 
-		while(!strongRoots[currentHighLabel].empty())
-        {
-            Node* nextStrongRoot = strongRoots[currentHighLabel].back();
-            strongRoots[currentHighLabel].pop_back();
-            --strongRootCount;
-            nextStrongRoot->next = NULL;
-            currentHighRoots.push_back(nextStrongRoot);
-        }
+			while(!strongRoots[currentHighLabel].empty())
+			{
+				Node* nextStrongRoot = strongRoots[currentHighLabel].back();
+				strongRoots[currentHighLabel].pop_back();
+				--strongRootCount;
+				nextStrongRoot->next = NULL;
+				currentHighRoots.push_back(nextStrongRoot);
+			}
 
-		#ifdef STATS_2
-			numHighestLabelVec.push_back(currentHighRoots.size());
-		#endif
+			#ifdef STATS_2
+				numHighestLabelVec.push_back(currentHighRoots.size());
+				auto timeStart = timer();
+			#endif
+			
+			parlay::parallel_for(0, currentHighRoots.size(), [&](size_t i) {
+				processRoot(currentHighRoots[i]);
+			});
 
-		#ifdef STATS_2
-			auto timeStart = timer();
-		#endif
-		
-		parlay::parallel_for(0, currentHighRoots.size(), [&](size_t i) {
-			processRoot(currentHighRoots[i]);
-		});
-
-		#ifdef STATS_2
-			auto timeEnd = timer();
-		#endif
+			#ifdef STATS_2
+				auto timeEnd = timer();
+			#endif
+		}
+		else
+			processRoot(strongRoot);
 
 		//add the necessary roots to the strong buckets after processing all of them in parallel
 		parlay::sequence<uint> rootsToAddSeq(numNodes);
