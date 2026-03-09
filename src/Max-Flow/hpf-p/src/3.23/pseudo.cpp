@@ -1,5 +1,5 @@
-//#define STATS true
-//#define STATS_2 true
+#define STATS true
+#define STATS_2 true
 
 #include <stdio.h>
 #include <sys/time.h>
@@ -28,7 +28,6 @@
 #include "../../../../hashbag.h"
 #include "parlay_hashmap.h"
 
-
 typedef unsigned int uint;
 typedef long int lint;
 typedef long long int llint;
@@ -37,15 +36,16 @@ typedef unsigned long long int ullint;
 constexpr int LOG2_WEIGHT = 6;
 constexpr int WEIGHT_RANGE = 1 << LOG2_WEIGHT;
 
-double timer(void) {
-  using namespace std::chrono;
-  auto now = steady_clock::now();
-  return duration<double>(now.time_since_epoch()).count();
+double timer(void)
+{
+	using namespace std::chrono;
+	auto now = steady_clock::now();
+	return duration<double>(now.time_since_epoch()).count();
 }
 
 struct node;
 
-typedef struct arc 
+typedef struct arc
 {
 	struct node *from;
 	struct node *to;
@@ -54,7 +54,7 @@ typedef struct arc
 	uint direction;
 } Arc;
 
-typedef struct node 
+typedef struct node
 {
 	uint visited;
 	uint numAdjacent;
@@ -71,13 +71,22 @@ typedef struct node
 	struct node *next;
 } Node;
 
-typedef parlay::sequence<Node*> Root;
+typedef struct merge_info
+{
+	Node *strongRoot, *strongNode, *weakNode;
+	Arc *out;
+
+	merge_info(Node *strongRoot, Node *strongNode, Node *weakNode, Arc *out) : strongRoot(strongRoot), strongNode(strongNode), weakNode(weakNode), out(out) {}
+
+} MergeInfo;
+
+typedef parlay::sequence<Node *> Root;
 
 //---------------  Global variables ------------------
 bool weighted = false;
 
 static uint numNodes = 0;
-static ullint numArcs = 0;	
+static ullint numArcs = 0;
 static uint source = 0;
 static uint sink = 0;
 
@@ -97,9 +106,13 @@ hashbag<uint> *busy_nodes;
 hashbag<uint> *roots_to_add;
 //-----------------------------------------------------
 
+#ifdef STATS_2
 std::vector<uint> numHighestLabelVec;
 std::vector<double> roundTimeVec;
 std::vector<ullint> numArcScansVec;
+
+long double totalTimePhase[10];
+#endif
 
 #ifdef STATS
 static ullint numPushes = 0;
@@ -111,15 +124,15 @@ static ullint numArcScans = 0;
 
 #ifdef DISPLAY_CUT
 static void
-displayCut (const uint gap) 
+displayCut(const uint gap)
 {
 	uint i;
 
 	printf("c\nc Nodes in source set of min s-t cut:\n");
 
-	for (i=0; i<numNodes; ++i) 
+	for (i = 0; i < numNodes; ++i)
 	{
-		if (adjacencyList[i].label >= gap) 
+		if (adjacencyList[i].label >= gap)
 		{
 			printf("n %d\n", adjacencyList[i].number);
 		}
@@ -129,13 +142,13 @@ displayCut (const uint gap)
 
 #ifdef DISPLAY_FLOW
 static void
-displayFlow (void) 
+displayFlow(void)
 {
 	uint i;
 
 	printf("c\nc Flow values on each arc:\n");
 
-	for (i=0; i<numArcs; ++i) 
+	for (i = 0; i < numArcs; ++i)
 	{
 		printf("a %d %d %d\n", arcList[i].from->number, arcList[i].to->number, arcList[i].flow);
 	}
@@ -143,7 +156,7 @@ displayFlow (void)
 #endif
 
 static void
-initializeNode (Node *nd, const uint n)
+initializeNode(Node *nd, const uint n)
 {
 	nd->label = 0;
 	nd->excess = 0;
@@ -161,18 +174,18 @@ initializeNode (Node *nd, const uint n)
 }
 
 static void
-liftAll (Node *rootNode) 
+liftAll(Node *rootNode)
 {
-	Node *temp, *current=rootNode;
+	Node *temp, *current = rootNode;
 
 	current->nextScan = current->childList;
 
 	write_add(&labelCount[current->label], -1);
 	current->label = numNodes;
 
-	for ( ; (current); current = current->parent)
+	for (; (current); current = current->parent)
 	{
-		while (current->nextScan) 
+		while (current->nextScan)
 		{
 			temp = current->nextScan;
 			current->nextScan = current->nextScan->next;
@@ -180,33 +193,33 @@ liftAll (Node *rootNode)
 			current->nextScan = current->childList;
 
 			write_add(&labelCount[current->label], -1);
-			current->label = numNodes;	
+			current->label = numNodes;
 		}
 	}
 }
 
 static void
-addToStrongBucket (Node *newRoot, Root *rootBucket) 
-{	
-    ++strongRootCount;
-    rootBucket->push_back(newRoot);
+addToStrongBucket(Node *newRoot, Root *rootBucket)
+{
+	++strongRootCount;
+	rootBucket->push_back(newRoot);
 }
 
 static void
-createOutOfTree (Node *nd)
+createOutOfTree(Node *nd)
 {
 	if (nd->numAdjacent)
 	{
-		if ((nd->outOfTree = (Arc **) malloc (nd->numAdjacent * sizeof (Arc *))) == NULL)
+		if ((nd->outOfTree = (Arc **)malloc(nd->numAdjacent * sizeof(Arc *))) == NULL)
 		{
-			printf ("%s Line %d: Out of memory\n", __FILE__, __LINE__);
-			exit (1);
+			printf("%s Line %d: Out of memory\n", __FILE__, __LINE__);
+			exit(1);
 		}
 	}
 }
 
 static void
-initializeArc (Arc *ac)
+initializeArc(Arc *ac)
 {
 	ac->from = NULL;
 	ac->to = NULL;
@@ -216,10 +229,10 @@ initializeArc (Arc *ac)
 }
 
 static void
-addOutOfTreeNode (Node *n, Arc *out) 
+addOutOfTreeNode(Node *n, Arc *out)
 {
 	n->outOfTree[n->numOutOfTree] = out;
-	++ n->numOutOfTree;
+	++n->numOutOfTree;
 }
 
 namespace Reading
@@ -229,62 +242,59 @@ namespace Reading
 		uint first = 0, last = 0;
 
 		auto chars = parlay::chars_from_file(std::string(filename));
-    	auto tokens_seq = tokens(chars);
+		auto tokens_seq = tokens(chars);
 
-    	auto header = tokens_seq[0];
-    	numNodes = chars_to_ulong_long(tokens_seq[1]);
-    	numArcs = chars_to_ulong_long(tokens_seq[2]);
+		auto header = tokens_seq[0];
+		numNodes = chars_to_ulong_long(tokens_seq[1]);
+		numArcs = chars_to_ulong_long(tokens_seq[2]);
 
 		source = parlay::hash32(0) % numNodes + 1;
-    	sink = parlay::hash32(1) % numNodes + 1;
+		sink = parlay::hash32(1) % numNodes + 1;
 
-		std::cout<<"Num nodes="<<numNodes<<", Num arcs="<<numArcs
-					<<", source="<<source-1<<", sink="<<sink-1<<'\n';
+		std::cout << "Num nodes=" << numNodes << ", Num arcs=" << numArcs
+				  << ", source=" << source - 1 << ", sink=" << sink - 1 << '\n';
 
-		adjacencyList = (Node *) malloc (numNodes * sizeof (Node));
+		adjacencyList = (Node *)malloc(numNodes * sizeof(Node));
 		strongRoots = new Root[numNodes]();
-		labelCount = (uint *) malloc (numNodes * sizeof (uint));
-		arcList = (Arc *) malloc (numArcs * sizeof (Arc));
+		labelCount = (uint *)malloc(numNodes * sizeof(uint));
+		arcList = (Arc *)malloc(numArcs * sizeof(Arc));
 
-		for (uint i=0; i<numNodes; ++i)
+		for (uint i = 0; i < numNodes; ++i)
 		{
-			initializeNode (&adjacencyList[i], (i+1));
+			initializeNode(&adjacencyList[i], (i + 1));
 			labelCount[i] = 0;
 		}
 
-		for (uint i=0; i<numArcs; ++i)
+		for (uint i = 0; i < numArcs; ++i)
 		{
-			initializeArc (&arcList[i]);
+			initializeArc(&arcList[i]);
 		}
 
 		first = 0;
-		last = numArcs-1;
+		last = numArcs - 1;
 
-		if(header == parlay::to_chars("WeightedAdjacencyGraph"))
+		if (header == parlay::to_chars("WeightedAdjacencyGraph"))
 			weighted = true;
 
 		assert(tokens_seq.size() == numNodes + numArcs + numArcs + 3);
 
 		auto offsets = parlay::sequence<uint>(numNodes + 1);
-    	auto edges = parlay::sequence<std::pair<uint, uint>>(numArcs);
+		auto edges = parlay::sequence<std::pair<uint, uint>>(numArcs);
 
-    	parlay::parallel_for(0, numNodes, [&](size_t i) {
-      		offsets[i] = parlay::internal::chars_to_int_t<uint>(
-        	make_slice(tokens_seq[i + 3]));
-    	});
+		parlay::parallel_for(0, numNodes, [&](size_t i)
+							 { offsets[i] = parlay::internal::chars_to_int_t<uint>(
+								   make_slice(tokens_seq[i + 3])); });
 		offsets[numNodes] = numArcs;
 
-		parlay::parallel_for(0, numArcs, [&](size_t i) {
-      		edges[i].first = parlay::internal::chars_to_int_t<uint>(
-          	make_slice(tokens_seq[i + numNodes + 3]));
-    	});
-		
-		if(weighted)
+		parlay::parallel_for(0, numArcs, [&](size_t i)
+							 { edges[i].first = parlay::internal::chars_to_int_t<uint>(
+								   make_slice(tokens_seq[i + numNodes + 3])); });
+
+		if (weighted)
 		{
-			parlay::parallel_for(0, numArcs, [&](size_t i) {
-      			edges[i].second = parlay::internal::chars_to_int_t<uint>(
-          		make_slice(tokens_seq[i + numNodes + numArcs + 3]));
-    		});
+			parlay::parallel_for(0, numArcs, [&](size_t i)
+								 { edges[i].second = parlay::internal::chars_to_int_t<uint>(
+									   make_slice(tokens_seq[i + numNodes + numArcs + 3])); });
 		}
 		else
 		{
@@ -292,74 +302,71 @@ namespace Reading
 			uint r = WEIGHT_RANGE;
 			uint range = r - l + 1;
 
-			parlay::parallel_for(0, numNodes, [&](uint u) {
-				parlay::parallel_for(offsets[u], offsets[u + 1], [&](uint i) {
+			parlay::parallel_for(0, numNodes, [&](uint u)
+								 { parlay::parallel_for(offsets[u], offsets[u + 1], [&](uint i)
+														{
 					uint v = edges[i].first;
-					edges[i].second = ((parlay::hash32(u) ^ parlay::hash32(v)) % range) + l;
-				});
-    		});
+					edges[i].second = ((parlay::hash32(u) ^ parlay::hash32(v)) % range) + l; }); });
 
 			weighted = true;
 		}
 
-		
-		for(uint from=0; from<numNodes; from++)
+		for (uint from = 0; from < numNodes; from++)
 		{
-			for(uint i=offsets[from]; i<offsets[from+1]; i++)
+			for (uint i = offsets[from]; i < offsets[from + 1]; i++)
 			{
 				uint to = edges[i].first;
 				uint capacity = edges[i].second;
 
-				if ((from+to) % 2)
+				if ((from + to) % 2)
 				{
 					arcList[first].from = &adjacencyList[from];
 					arcList[first].to = &adjacencyList[to];
 					arcList[first].capacity = capacity;
 
-					++ first;
+					++first;
 				}
-				else 
+				else
 				{
 					arcList[last].from = &adjacencyList[from];
 					arcList[last].to = &adjacencyList[to];
 					arcList[last].capacity = capacity;
-					-- last;
+					--last;
 				}
 
-				++ adjacencyList[from].numAdjacent;
-				++ adjacencyList[to].numAdjacent;
+				++adjacencyList[from].numAdjacent;
+				++adjacencyList[to].numAdjacent;
 			}
 		}
 
-
-		for (uint i=0; i<numNodes; ++i) 
+		for (uint i = 0; i < numNodes; ++i)
 		{
-			createOutOfTree (&adjacencyList[i]);
+			createOutOfTree(&adjacencyList[i]);
 		}
 
-		for (uint i=0; i<numArcs; i++) 
+		for (uint i = 0; i < numArcs; i++)
 		{
 			uint to = arcList[i].to->number;
 			uint from = arcList[i].from->number;
 			uint capacity = arcList[i].capacity;
 
-			if (!((source == to) || (sink == from) || (from == to))) 
+			if (!((source == to) || (sink == from) || (from == to)))
 			{
-				if ((source == from) && (to == sink)) 
+				if ((source == from) && (to == sink))
 				{
 					arcList[i].flow = capacity;
 				}
 				else if (from == source)
 				{
-					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+					addOutOfTreeNode(&adjacencyList[from - 1], &arcList[i]);
 				}
 				else if (to == sink)
 				{
-					addOutOfTreeNode (&adjacencyList[to-1], &arcList[i]);
+					addOutOfTreeNode(&adjacencyList[to - 1], &arcList[i]);
 				}
 				else
 				{
-					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+					addOutOfTreeNode(&adjacencyList[from - 1], &arcList[i]);
 				}
 			}
 		}
@@ -373,11 +380,13 @@ namespace Reading
 
 		struct stat sb;
 		uint fd = open(filename, O_RDONLY);
-		if (fd == -1) {
+		if (fd == -1)
+		{
 			std::cerr << "Error: Cannot open file " << filename << std::endl;
 			abort();
 		}
-		if (fstat(fd, &sb) == -1) {
+		if (fstat(fd, &sb) == -1)
+		{
 			std::cerr << "Error: Unable to acquire file stat" << std::endl;
 			abort();
 		}
@@ -389,161 +398,155 @@ namespace Reading
 		numArcs = reinterpret_cast<uint64_t *>(data)[1];
 
 		source = parlay::hash32(0) % numNodes + 1;
-    	sink = parlay::hash32(1) % numNodes + 1;
+		sink = parlay::hash32(1) % numNodes + 1;
 
 		size_t sizes = reinterpret_cast<uint64_t *>(data)[2];
 
-		std::cout<<"Num nodes="<<numNodes<<", Num arcs="<<numArcs
-					<<", source="<<source-1<<", sink="<<sink-1<<'\n';
+		std::cout << "Num nodes=" << numNodes << ", Num arcs=" << numArcs
+				  << ", source=" << source - 1 << ", sink=" << sink - 1 << '\n';
 
-		adjacencyList = (Node *) malloc (numNodes * sizeof (Node));
+		adjacencyList = (Node *)malloc(numNodes * sizeof(Node));
 		strongRoots = new Root[numNodes]();
 		is_busy = new parlay::sequence<bool>(numNodes);
 		busy_nodes = new hashbag<uint>(numNodes);
 		roots_to_add = new hashbag<uint>(numNodes);
-		labelCount = (uint *) malloc (numNodes * sizeof (uint));
-		arcList = (Arc *) malloc (numArcs * sizeof (Arc));
+		labelCount = (uint *)malloc(numNodes * sizeof(uint));
+		arcList = (Arc *)malloc(numArcs * sizeof(Arc));
 
-		for (uint i=0; i<numNodes; ++i)
+		for (uint i = 0; i < numNodes; ++i)
 		{
-			initializeNode (&adjacencyList[i], (i+1));
+			initializeNode(&adjacencyList[i], (i + 1));
 			labelCount[i] = 0;
 		}
 
-		for (uint i=0; i<numArcs; ++i)
+		for (uint i = 0; i < numArcs; ++i)
 		{
-			initializeArc (&arcList[i]);
+			initializeArc(&arcList[i]);
 		}
 
 		first = 0;
-		last = numArcs-1;
+		last = numArcs - 1;
 
-		
 		assert(sizes == (numNodes + 1) * 8 + numArcs * 4 + 3 * 8);
-    	auto offsets = parlay::sequence<long long>::uninitialized(numNodes + 1);
-    	auto edges = parlay::sequence<std::pair<uint, uint>>::uninitialized(numArcs);
+		auto offsets = parlay::sequence<long long>::uninitialized(numNodes + 1);
+		auto edges = parlay::sequence<std::pair<uint, uint>>::uninitialized(numArcs);
 
-		parlay::parallel_for(0, numNodes + 1, [&](size_t i) {
-      		offsets[i] = reinterpret_cast<uint64_t *>(data + 3 * 8)[i];
-    	});
+		parlay::parallel_for(0, numNodes + 1, [&](size_t i)
+							 { offsets[i] = reinterpret_cast<uint64_t *>(data + 3 * 8)[i]; });
 
-    	parlay::parallel_for(0, numArcs, [&](size_t i) {
-      		edges[i].first = reinterpret_cast<uint32_t *>(data + 3 * 8 + (numNodes + 1) * 8)[i];
-    	});
-		
-		
-		std::cout<<"Generating edge weights\n";
+		parlay::parallel_for(0, numArcs, [&](size_t i)
+							 { edges[i].first = reinterpret_cast<uint32_t *>(data + 3 * 8 + (numNodes + 1) * 8)[i]; });
+
+		std::cout << "Generating edge weights\n";
 		uint l = 1;
 		uint r = WEIGHT_RANGE;
 		uint range = r - l + 1;
 
-		parlay::parallel_for(0, numNodes, [&](uint u) {
-			parlay::parallel_for(offsets[u], offsets[u + 1], [&](uint i) {
+		parlay::parallel_for(0, numNodes, [&](uint u)
+							 { parlay::parallel_for(offsets[u], offsets[u + 1], [&](uint i)
+													{
 				uint v = edges[i].first;
-				edges[i].second = ((parlay::hash32(u) ^ parlay::hash32(v)) % range) + l;
-			});
-    	});
+				edges[i].second = ((parlay::hash32(u) ^ parlay::hash32(v)) % range) + l; }); });
 
 		weighted = true;
 
-		for(uint from=0; from<numNodes; from++)
+		for (uint from = 0; from < numNodes; from++)
 		{
-			for(uint i=offsets[from]; i<offsets[from+1]; i++)
+			for (uint i = offsets[from]; i < offsets[from + 1]; i++)
 			{
 				uint to = edges[i].first;
 				uint capacity = edges[i].second;
 
-				if ((from+to) % 2)
+				if ((from + to) % 2)
 				{
 					arcList[first].from = &adjacencyList[from];
 					arcList[first].to = &adjacencyList[to];
 					arcList[first].capacity = capacity;
 
-					++ first;
+					++first;
 				}
-				else 
+				else
 				{
 					arcList[last].from = &adjacencyList[from];
 					arcList[last].to = &adjacencyList[to];
 					arcList[last].capacity = capacity;
-					-- last;
+					--last;
 				}
 
-				++ adjacencyList[from].numAdjacent;
-				++ adjacencyList[to].numAdjacent;
+				++adjacencyList[from].numAdjacent;
+				++adjacencyList[to].numAdjacent;
 			}
 		}
 
-
-		for (uint i=0; i<numNodes; ++i) 
+		for (uint i = 0; i < numNodes; ++i)
 		{
-			createOutOfTree (&adjacencyList[i]);
+			createOutOfTree(&adjacencyList[i]);
 		}
 
-		for (uint i=0; i<numArcs; i++) 
+		for (uint i = 0; i < numArcs; i++)
 		{
 			uint to = arcList[i].to->number;
 			uint from = arcList[i].from->number;
 			uint capacity = arcList[i].capacity;
 
-			if (!((source == to) || (sink == from) || (from == to))) 
+			if (!((source == to) || (sink == from) || (from == to)))
 			{
-				if ((source == from) && (to == sink)) 
+				if ((source == from) && (to == sink))
 				{
 					arcList[i].flow = capacity;
 				}
 				else if (from == source)
 				{
-					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+					addOutOfTreeNode(&adjacencyList[from - 1], &arcList[i]);
 				}
 				else if (to == sink)
 				{
-					addOutOfTreeNode (&adjacencyList[to-1], &arcList[i]);
+					addOutOfTreeNode(&adjacencyList[to - 1], &arcList[i]);
 				}
 				else
 				{
-					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+					addOutOfTreeNode(&adjacencyList[from - 1], &arcList[i]);
 				}
 			}
 		}
 	}
 
-	static void readDimacsFileCreateList (char const *filename) 
+	static void readDimacsFileCreateList(char const *filename)
 	{
-		//only works for weighted input
+		// only works for weighted input
 		weighted = true;
 
 		auto fin = fopen(filename, "r");
 
-		uint lineLength=1024, i, capacity, numLines = 0, from, to, first=0, last=0;
+		uint lineLength = 1024, i, capacity, numLines = 0, from, to, first = 0, last = 0;
 		char *line, *word, ch, ch1;
 
-		if ((line = (char *) malloc ((lineLength+1) * sizeof (char))) == NULL)
+		if ((line = (char *)malloc((lineLength + 1) * sizeof(char))) == NULL)
 		{
-			printf ("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
-			exit (1);
+			printf("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
+			exit(1);
 		}
 
-		if ((word = (char *) malloc ((lineLength+1) * sizeof (char))) == NULL)
+		if ((word = (char *)malloc((lineLength + 1) * sizeof(char))) == NULL)
 		{
-			printf ("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
-			exit (1);
+			printf("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
+			exit(1);
 		}
 
-		while (fgets (line, lineLength, fin))
+		while (fgets(line, lineLength, fin))
 		{
-			++ numLines;
+			++numLines;
 
 			switch (*line)
 			{
 			case 'p':
 
-				sscanf (line, "%c %s %d %d", &ch, word, &numNodes, &numArcs);
+				sscanf(line, "%c %s %d %d", &ch, word, &numNodes, &numArcs);
 
-				if ((adjacencyList = (Node *) malloc (numNodes * sizeof (Node))) == NULL)
+				if ((adjacencyList = (Node *)malloc(numNodes * sizeof(Node))) == NULL)
 				{
-					printf ("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
-					exit (1);
+					printf("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
+					exit(1);
 				}
 
 				strongRoots = new Root[numNodes]();
@@ -551,143 +554,148 @@ namespace Reading
 				busy_nodes = new hashbag<uint>(numNodes);
 				roots_to_add = new hashbag<uint>(numNodes);
 
-				if ((labelCount = (uint *) malloc (numNodes * sizeof (uint))) == NULL)
+				if ((labelCount = (uint *)malloc(numNodes * sizeof(uint))) == NULL)
 				{
-					printf ("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
-					exit (1);
+					printf("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
+					exit(1);
 				}
 
-				if ((arcList = (Arc *) malloc (numArcs * sizeof (Arc))) == NULL)
+				if ((arcList = (Arc *)malloc(numArcs * sizeof(Arc))) == NULL)
 				{
-					printf ("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
-					exit (1);
+					printf("%s, %d: Could not allocate memory.\n", __FILE__, __LINE__);
+					exit(1);
 				}
 
-				for (i=0; i<numNodes; ++i)
+				for (i = 0; i < numNodes; ++i)
 				{
-					initializeNode (&adjacencyList[i], (i+1));
+					initializeNode(&adjacencyList[i], (i + 1));
 					labelCount[i] = 0;
 				}
 
-				for (i=0; i<numArcs; ++i)
+				for (i = 0; i < numArcs; ++i)
 				{
-					initializeArc (&arcList[i]);
+					initializeArc(&arcList[i]);
 				}
 
 				first = 0;
-				last = numArcs-1;
+				last = numArcs - 1;
 
 				break;
 
 			case 'a':
 
-				sscanf (line, "%c %d %d %d", &ch, &from, &to, &capacity);
+				sscanf(line, "%c %d %d %d", &ch, &from, &to, &capacity);
 
-				if ((from+to) % 2)
+				if ((from + to) % 2)
 				{
-					arcList[first].from = &adjacencyList[from-1];
-					arcList[first].to = &adjacencyList[to-1];
+					arcList[first].from = &adjacencyList[from - 1];
+					arcList[first].to = &adjacencyList[to - 1];
 					arcList[first].capacity = capacity;
 
-					++ first;
+					++first;
 				}
-				else 
+				else
 				{
-					arcList[last].from = &adjacencyList[from-1];
-					arcList[last].to = &adjacencyList[to-1];
+					arcList[last].from = &adjacencyList[from - 1];
+					arcList[last].to = &adjacencyList[to - 1];
 					arcList[last].capacity = capacity;
-					-- last;
+					--last;
 				}
 
-				++ adjacencyList[from-1].numAdjacent;
-				++ adjacencyList[to-1].numAdjacent;
+				++adjacencyList[from - 1].numAdjacent;
+				++adjacencyList[to - 1].numAdjacent;
 
 				break;
 
 			case 'n':
 
-				sscanf (line, "%c %d %c", &ch, &i, &ch1);
+				sscanf(line, "%c %d %c", &ch, &i, &ch1);
 
 				if (ch1 == 's')
 				{
-					source = i;	
+					source = i;
 				}
 				else if (ch1 == 't')
 				{
-					sink = i;	
+					sink = i;
 				}
 				else
 				{
-					printf ("Unrecognized character %c on line %d\n", ch1, numLines);
-					exit (1);
+					printf("Unrecognized character %c on line %d\n", ch1, numLines);
+					exit(1);
 				}
 
 				break;
 			}
 		}
 
-		for (i=0; i<numNodes; ++i) 
+		for (i = 0; i < numNodes; ++i)
 		{
-			createOutOfTree (&adjacencyList[i]);
+			createOutOfTree(&adjacencyList[i]);
 		}
 
-		for (i=0; i<numArcs; i++) 
+		for (i = 0; i < numArcs; i++)
 		{
 			to = arcList[i].to->number;
 			from = arcList[i].from->number;
 			capacity = arcList[i].capacity;
 
-			if (!((source == to) || (sink == from) || (from == to))) 
+			if (!((source == to) || (sink == from) || (from == to)))
 			{
-				if ((source == from) && (to == sink)) 
+				if ((source == from) && (to == sink))
 				{
 					arcList[i].flow = capacity;
 				}
 				else if (from == source)
 				{
-					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+					addOutOfTreeNode(&adjacencyList[from - 1], &arcList[i]);
 				}
 				else if (to == sink)
 				{
-					addOutOfTreeNode (&adjacencyList[to-1], &arcList[i]);
+					addOutOfTreeNode(&adjacencyList[to - 1], &arcList[i]);
 				}
 				else
 				{
-					addOutOfTreeNode (&adjacencyList[from-1], &arcList[i]);
+					addOutOfTreeNode(&adjacencyList[from - 1], &arcList[i]);
 				}
 			}
 		}
 
-		free (line);
+		free(line);
 		line = NULL;
 
-		free (word);
+		free(word);
 		word = NULL;
 	}
 
-	void read_graph(const char* filename)
+	void read_graph(const char *filename)
 	{
 		std::string str_filename(filename);
-		
+
 		size_t idx = str_filename.find_last_of('.');
 
-		if (idx == std::string::npos) {
+		if (idx == std::string::npos)
+		{
 			std::cerr << "Error: No graph extension provided" << std::endl;
 			abort();
 		}
 
 		std::string subfix = str_filename.substr(idx + 1);
-		
-		if (subfix == "adj") {
+
+		if (subfix == "adj")
+		{
 			read_pbbs_format(filename);
-		} 
-		else if (subfix == "bin") {
+		}
+		else if (subfix == "bin")
+		{
 			read_binary_format(filename);
 		}
-		else if (subfix == "max") {
+		else if (subfix == "max")
+		{
 			readDimacsFileCreateList(filename);
 		}
-		else {
+		else
+		{
 			std::cerr << "Error: Invalid graph extension" << std::endl;
 			abort();
 		}
@@ -696,58 +704,57 @@ namespace Reading
 	}
 }
 
-
 static void
-simpleInitialization (void) 
+simpleInitialization(void)
 {
 	uint i, size;
 	Arc *tempArc;
 
-	size = adjacencyList[source-1].numOutOfTree;
-	for (i=0; i<size; ++i) 
+	size = adjacencyList[source - 1].numOutOfTree;
+	for (i = 0; i < size; ++i)
 	{
-		tempArc = adjacencyList[source-1].outOfTree[i];
+		tempArc = adjacencyList[source - 1].outOfTree[i];
 		tempArc->flow = tempArc->capacity;
 		tempArc->to->excess += tempArc->capacity;
 	}
 
-	size = adjacencyList[sink-1].numOutOfTree;
-	for (i=0; i<size; ++i)
+	size = adjacencyList[sink - 1].numOutOfTree;
+	for (i = 0; i < size; ++i)
 	{
-		tempArc = adjacencyList[sink-1].outOfTree[i];
+		tempArc = adjacencyList[sink - 1].outOfTree[i];
 		tempArc->flow = tempArc->capacity;
 		tempArc->from->excess -= tempArc->capacity;
 	}
 
-	adjacencyList[source-1].excess = 0;
-	adjacencyList[sink-1].excess = 0;
+	adjacencyList[source - 1].excess = 0;
+	adjacencyList[sink - 1].excess = 0;
 
-	for (i=0; i<numNodes; ++i) 
+	for (i = 0; i < numNodes; ++i)
 	{
-		if (adjacencyList[i].excess > 0) 
+		if (adjacencyList[i].excess > 0)
 		{
-		    adjacencyList[i].label = 1;
-			++ labelCount[1];
+			adjacencyList[i].label = 1;
+			++labelCount[1];
 
-			addToStrongBucket (&adjacencyList[i], &strongRoots[1]);
+			addToStrongBucket(&adjacencyList[i], &strongRoots[1]);
 		}
 	}
 
-	adjacencyList[source-1].label = numNodes;
-	adjacencyList[sink-1].label = 0;
+	adjacencyList[source - 1].label = numNodes;
+	adjacencyList[sink - 1].label = 0;
 	labelCount[0] = (numNodes - 2) - labelCount[1];
 }
 
-static inline Node* getRoot(Node *nd) 
+static inline Node *getRoot(Node *nd)
 {
-	while (nd->parent) 
+	while (nd->parent)
 		nd = nd->parent;
 
 	return nd;
 }
 
-static inline int 
-addRelationship (Node *newParent, Node *child) 
+static inline int
+addRelationship(Node *newParent, Node *child)
 {
 	child->parent = newParent;
 	child->next = newParent->childList;
@@ -757,42 +764,43 @@ addRelationship (Node *newParent, Node *child)
 }
 
 static inline void
-breakRelationship (Node *oldParent, Node *child) 
+breakRelationship(Node *oldParent, Node *child)
 {
 	Node *current;
 
 	child->parent = NULL;
 
-	if (oldParent->childList == child) 
+	if (oldParent->childList == child)
 	{
 		oldParent->childList = child->next;
 		child->next = NULL;
 		return;
 	}
 
-	for (current = oldParent->childList; (current->next != child); current = current->next);
+	for (current = oldParent->childList; (current->next != child); current = current->next)
+		;
 
 	current->next = child->next;
 	child->next = NULL;
 }
 
 static void
-merge (Node *parent, Node *child, Arc *newArc) 
+merge(Node *parent, Node *child, Arc *newArc)
 {
 	Arc *oldArc;
 	Node *current = child, *oldParent, *newParent = parent;
 
 #ifdef STATS
-	++ numMergers;
+	++numMergers;
 #endif
 
-	while (current->parent) 
+	while (current->parent)
 	{
 		oldArc = current->arcToParent;
 		current->arcToParent = newArc;
 		oldParent = current->parent;
-		breakRelationship (oldParent, current);
-		addRelationship (newParent, current);
+		breakRelationship(oldParent, current);
+		addRelationship(newParent, current);
 		newParent = current;
 		current = oldParent;
 		newArc = oldArc;
@@ -800,18 +808,17 @@ merge (Node *parent, Node *child, Arc *newArc)
 	}
 
 	current->arcToParent = newArc;
-	addRelationship (newParent, current);
+	addRelationship(newParent, current);
 }
 
-
-static inline void 
-pushUpward (Arc *currentArc, Node *child, Node *parent, const uint resCap) 
+static inline void
+pushUpward(Arc *currentArc, Node *child, Node *parent, const uint resCap)
 {
 #ifdef STATS
-	++ numPushes;
+	++numPushes;
 #endif
 
-	if (resCap >= child->excess) 
+	if (resCap >= child->excess)
 	{
 		parent->excess += child->excess;
 		currentArc->flow += child->excess;
@@ -824,22 +831,21 @@ pushUpward (Arc *currentArc, Node *child, Node *parent, const uint resCap)
 	child->excess -= resCap;
 	currentArc->flow = currentArc->capacity;
 	parent->outOfTree[parent->numOutOfTree] = currentArc;
-	++ parent->numOutOfTree;
-	breakRelationship (parent, child);
+	++parent->numOutOfTree;
+	breakRelationship(parent, child);
 
 	roots_to_add->insert(child->number);
-	//addToStrongBucket (child, &strongRoots[child->label]);
+	// addToStrongBucket (child, &strongRoots[child->label]);
 }
 
-
 static inline void
-pushDownward (Arc *currentArc, Node *child, Node *parent, uint flow) 
+pushDownward(Arc *currentArc, Node *child, Node *parent, uint flow)
 {
 #ifdef STATS
-	++ numPushes;
+	++numPushes;
 #endif
 
-	if (flow >= child->excess) 
+	if (flow >= child->excess)
 	{
 		parent->excess += child->excess;
 		currentArc->flow -= child->excess;
@@ -852,50 +858,50 @@ pushDownward (Arc *currentArc, Node *child, Node *parent, uint flow)
 	parent->excess += flow;
 	currentArc->flow = 0;
 	parent->outOfTree[parent->numOutOfTree] = currentArc;
-	++ parent->numOutOfTree;
-	breakRelationship (parent, child);
+	++parent->numOutOfTree;
+	breakRelationship(parent, child);
 
 	roots_to_add->insert(child->number);
-	//addToStrongBucket (child, &strongRoots[child->label]);
+	// addToStrongBucket (child, &strongRoots[child->label]);
 }
 
 static void
-pushExcess (Node *strongRoot) 
+pushExcess(Node *strongRoot)
 {
 	Node *current, *parent;
 	Arc *arcToParent;
-	int prevEx=1;
+	int prevEx = 1;
 
-	for (current = strongRoot; (current->excess && current->parent); current = parent) 
+	for (current = strongRoot; (current->excess && current->parent); current = parent)
 	{
 		parent = current->parent;
 		prevEx = parent->excess;
-		
+
 		arcToParent = current->arcToParent;
 
 		if (arcToParent->direction)
 		{
-			pushUpward (arcToParent, current, parent, (arcToParent->capacity - arcToParent->flow)); 
+			pushUpward(arcToParent, current, parent, (arcToParent->capacity - arcToParent->flow));
 		}
 		else
 		{
-			pushDownward (arcToParent, current, parent, arcToParent->flow); 
+			pushDownward(arcToParent, current, parent, arcToParent->flow);
 		}
 	}
 
 	if ((current->excess > 0) && (prevEx <= 0))
 	{
 		roots_to_add->insert(current->number);
-		//addToStrongBucket (current, &strongRoots[current->label]);
+		// addToStrongBucket (current, &strongRoots[current->label]);
 	}
 }
 
-bool can_push(Node* y)
+bool can_push(Node *y)
 {
-	//return true;
+	// return true;
 
 	assert(y != NULL);
-	if(compare_and_swap(&((*is_busy)[y->number - 1]), false, true))
+	if (compare_and_swap(&((*is_busy)[y->number - 1]), false, true))
 	{
 		busy_nodes->insert(y->number);
 		return true;
@@ -905,7 +911,7 @@ bool can_push(Node* y)
 }
 
 static Arc *
-findWeakNode (Node *strongNode, Node **weakNode, bool &skipped_arc) 
+findWeakNode(Node *strongNode, Node **weakNode, bool &skipped_arc)
 {
 	uint i, size;
 	Arc *out;
@@ -915,16 +921,16 @@ findWeakNode (Node *strongNode, Node **weakNode, bool &skipped_arc)
 
 	size = strongNode->numOutOfTree;
 
-	for (i=strongNode->nextArc; i<size; ++i) 
+	for (i = strongNode->nextArc; i < size; ++i)
 	{
 
 #ifdef STATS
-		++ numArcScans;
+		++numArcScans;
 #endif
 
-		if (strongNode->outOfTree[i]->to->label == (highestStrongLabel-1))
+		if (strongNode->outOfTree[i]->to->label == (highestStrongLabel - 1))
 		{
-			if(!can_push(getRoot(strongNode->outOfTree[i]->to)))
+			if (!can_push(getRoot(strongNode->outOfTree[i]->to)))
 			{
 				skipped_arc = true;
 				firstSkippedArc = std::min(firstSkippedArc, i);
@@ -934,13 +940,13 @@ findWeakNode (Node *strongNode, Node **weakNode, bool &skipped_arc)
 			strongNode->nextArc = std::min(i, firstSkippedArc);
 			out = strongNode->outOfTree[i];
 			(*weakNode) = out->to;
-			-- strongNode->numOutOfTree;
+			--strongNode->numOutOfTree;
 			strongNode->outOfTree[i] = strongNode->outOfTree[strongNode->numOutOfTree];
 			return (out);
 		}
-		else if (strongNode->outOfTree[i]->from->label == (highestStrongLabel-1	))
+		else if (strongNode->outOfTree[i]->from->label == (highestStrongLabel - 1))
 		{
-			if(!can_push(getRoot(strongNode->outOfTree[i]->from)))
+			if (!can_push(getRoot(strongNode->outOfTree[i]->from)))
 			{
 				skipped_arc = true;
 				firstSkippedArc = std::min(firstSkippedArc, i);
@@ -950,13 +956,13 @@ findWeakNode (Node *strongNode, Node **weakNode, bool &skipped_arc)
 			strongNode->nextArc = std::min(i, firstSkippedArc);
 			out = strongNode->outOfTree[i];
 			(*weakNode) = out->from;
-			-- strongNode->numOutOfTree;
+			--strongNode->numOutOfTree;
 			strongNode->outOfTree[i] = strongNode->outOfTree[strongNode->numOutOfTree];
 			return (out);
 		}
 	}
 
-	if(!skipped_arc) 
+	if (!skipped_arc)
 		strongNode->nextArc = strongNode->numOutOfTree;
 	else
 		strongNode->nextArc = firstSkippedArc;
@@ -964,35 +970,33 @@ findWeakNode (Node *strongNode, Node **weakNode, bool &skipped_arc)
 	return NULL;
 }
 
-
 static void
-checkChildren (Node *curNode, bool skipped_arc) 
+checkChildren(Node *curNode, bool skipped_arc)
 {
-	for ( ; (curNode->nextScan); curNode->nextScan = curNode->nextScan->next)
+	for (; (curNode->nextScan); curNode->nextScan = curNode->nextScan->next)
 	{
 		if (curNode->nextScan->label == curNode->label)
 		{
 			return;
 		}
-		
-	}	
+	}
 
-	if(!skipped_arc)
+	if (!skipped_arc)
 	{
 		write_add(&labelCount[curNode->label], -1);
-		++	curNode->label;
+		++curNode->label;
 		write_add(&labelCount[curNode->label], 1);
 
-	#ifdef STATS
-		++ numRelabels;
-	#endif
+#ifdef STATS
+		++numRelabels;
+#endif
 
 		curNode->nextArc = 0;
 	}
 }
 
-static void
-processRoot (Node *strongRoot) 
+static MergeInfo
+processRoot(Node *strongRoot)
 {
 	Node *temp, *strongNode = strongRoot, *weakNode;
 	Arc *out;
@@ -1000,109 +1004,117 @@ processRoot (Node *strongRoot)
 
 	strongRoot->nextScan = strongRoot->childList;
 
-	if ((out = findWeakNode (strongRoot, &weakNode, skipped_arc)))
+	if ((out = findWeakNode(strongRoot, &weakNode, skipped_arc)))
 	{
+		return MergeInfo(strongRoot, strongNode, weakNode, out);
+
+		/*
 		merge (weakNode, strongNode, out);
 		pushExcess (strongRoot);
 		return;
+		*/
 	}
 
-	checkChildren (strongRoot, skipped_arc);
-	
+	checkChildren(strongRoot, skipped_arc);
+
 	while (strongNode)
 	{
-		while (strongNode->nextScan) 
+		while (strongNode->nextScan)
 		{
 			temp = strongNode->nextScan;
 			strongNode->nextScan = strongNode->nextScan->next;
 			strongNode = temp;
 			strongNode->nextScan = strongNode->childList;
 
-			if ((out = findWeakNode (strongNode, &weakNode, skipped_arc	)))
+			if ((out = findWeakNode(strongNode, &weakNode, skipped_arc)))
 			{
+				return MergeInfo(strongRoot, strongNode, weakNode, out);
+
+				/*
 				merge (weakNode, strongNode, out);
 				pushExcess (strongRoot);
 				return;
+				*/
 			}
 
-			checkChildren (strongNode, skipped_arc);
+			checkChildren(strongNode, skipped_arc);
 		}
 
 		if ((strongNode = strongNode->parent))
 		{
-			checkChildren (strongNode, skipped_arc);
+			checkChildren(strongNode, skipped_arc);
 		}
 	}
 
 	roots_to_add->insert(strongRoot->number);
-	//addToStrongBucket (strongRoot, &strongRoots[strongRoot->label]);
-	return;
+	// addToStrongBucket (strongRoot, &strongRoots[strongRoot->label]);
+	return MergeInfo(NULL, NULL, NULL, NULL);
 }
 
 static Node *
-getHighestStrongRoot (void) 
+getHighestStrongRoot(void)
 {
-    uint i;
-    Node *strongRoot;
+	uint i;
+	Node *strongRoot;
 
-    for (i=highestStrongLabel; i>0; --i) 
-    {
-        if (!strongRoots[i].empty())  
-        {
-            highestStrongLabel = i;
-            if (labelCount[i-1]) 
-            {
-                strongRoot = strongRoots[i].back();
+	for (i = highestStrongLabel; i > 0; --i)
+	{
+		if (!strongRoots[i].empty())
+		{
+			highestStrongLabel = i;
+			if (labelCount[i - 1])
+			{
+				strongRoot = strongRoots[i].back();
 				strongRoots[i].pop_back();
 
-                strongRoot->next = NULL;
+				strongRoot->next = NULL;
 				--strongRootCount;
-                return strongRoot;				
-            }
+				return strongRoot;
+			}
 
-            while (!strongRoots[i].empty()) 
-            {
+			while (!strongRoots[i].empty())
+			{
 
 #ifdef STATS
-                ++ numGaps;
+				++numGaps;
 #endif
-                strongRoot = strongRoots[i].back();
-                strongRoots[i].pop_back();
+				strongRoot = strongRoots[i].back();
+				strongRoots[i].pop_back();
 
 				--strongRootCount;
-                liftAll (strongRoot);
-            }
-        }
-    }
+				liftAll(strongRoot);
+			}
+		}
+	}
 
-    if (strongRoots[0].empty()) 
-    {
-        return NULL;
-    }
+	if (strongRoots[0].empty())
+	{
+		return NULL;
+	}
 
-    while (!strongRoots[0].empty()) 
-    {
-        strongRoot = strongRoots[0].back();
-        strongRoots[0].pop_back();
-        --strongRootCount;
-        strongRoot->label = 1;
-        -- labelCount[0];
-        ++ labelCount[1];
+	while (!strongRoots[0].empty())
+	{
+		strongRoot = strongRoots[0].back();
+		strongRoots[0].pop_back();
+		--strongRootCount;
+		strongRoot->label = 1;
+		--labelCount[0];
+		++labelCount[1];
 
 #ifdef STATS
-        ++ numRelabels;
+		++numRelabels;
 #endif
 
-        addToStrongBucket (strongRoot, &strongRoots[strongRoot->label]);		
-    }
-    highestStrongLabel = 1;
+		addToStrongBucket(strongRoot, &strongRoots[strongRoot->label]);
+	}
+	highestStrongLabel = 1;
 
-    strongRoot = strongRoots[1].back();
-    strongRoots[1].pop_back();
+	strongRoot = strongRoots[1].back();
+	strongRoots[1].pop_back();
 	--strongRootCount;
-    strongRoot->next = NULL;
+	strongRoot->next = NULL;
 
-    return strongRoot;	
+	return strongRoot;
 }
 
 long long countRoots(void)
@@ -1116,223 +1128,246 @@ long long countHighestLabelRoots(void)
 }
 
 static void
-pseudoflowPhase1 (void) 
+pseudoflowPhase1(void)
 {
 	Node *strongRoot;
 	long long round = 0;
 
-	while ((strongRoot = getHighestStrongRoot ()))  
+	while ((strongRoot = getHighestStrongRoot()))
 	{
 		round++;
 		int currentHighLabel = strongRoot->label;
 
-		#ifdef STATS_2
-			numArcScans = 0;
-		#endif
+#ifdef STATS_2
+		numArcScans = 0;
+#endif
 
-		if(strongRoots[currentHighLabel].size() >= 0)
+		std::vector<Node *> currentHighRoots;
+		currentHighRoots.push_back(strongRoot);
+
+		while (!strongRoots[currentHighLabel].empty())
 		{
-			std::vector<Node*> currentHighRoots;
-			currentHighRoots.push_back(strongRoot);
-
-			while(!strongRoots[currentHighLabel].empty())
-			{
-				Node* nextStrongRoot = strongRoots[currentHighLabel].back();
-				strongRoots[currentHighLabel].pop_back();
-				--strongRootCount;
-				nextStrongRoot->next = NULL;
-				currentHighRoots.push_back(nextStrongRoot);
-			}
-
-			#ifdef STATS_2
-				numHighestLabelVec.push_back(currentHighRoots.size());
-				auto timeStart = timer();
-			#endif
-			
-			parlay::parallel_for(0, currentHighRoots.size(), [&](size_t i) {
-				processRoot(currentHighRoots[i]);
-			});
-
-			#ifdef STATS_2
-				auto timeEnd = timer();
-			#endif
+			Node *nextStrongRoot = strongRoots[currentHighLabel].back();
+			strongRoots[currentHighLabel].pop_back();
+			--strongRootCount;
+			nextStrongRoot->next = NULL;
+			currentHighRoots.push_back(nextStrongRoot);
 		}
-		else
-			processRoot(strongRoot);
 
-		//add the necessary roots to the strong buckets after processing all of them in parallel
+#ifdef STATS_2
+		numHighestLabelVec.push_back(currentHighRoots.size());
+		auto timeStart = timer();
+#endif
+
+#ifdef STATS_2
+		auto phaseTimeStart = timer();
+#endif
+		// Phase 1: find all the merges to be done in this round in parallel
+		auto mergeInfoVec = parlay::map(currentHighRoots, [&](Node *strongRoot)
+										{ return processRoot(strongRoot); });
+#ifdef STATS_2
+		auto phaseTimeEnd = timer();
+		totalTimePhase[1] += phaseTimeEnd - phaseTimeStart;
+		phaseTimeStart = timer();
+#endif
+		// Phase 2: perform all the merges and push excess in parallel
+		parlay::parallel_for(0, mergeInfoVec.size(), [&](size_t i)
+							 {
+				if(mergeInfoVec[i].strongNode)
+				{
+					merge(mergeInfoVec[i].weakNode, mergeInfoVec[i].strongNode, mergeInfoVec[i].out);
+					pushExcess(mergeInfoVec[i].strongRoot);
+				} });
+#ifdef STATS_2
+	phaseTimeEnd = timer();
+	totalTimePhase[2] += phaseTimeEnd - phaseTimeStart;
+	phaseTimeStart = timer();
+#endif
+
+		// Phase 3: add the necessary roots to the strong buckets after processing all of them in parallel
 		parlay::sequence<uint> rootsToAddSeq(numNodes);
 		size_t numRootsToAdd = roots_to_add->pack_into(rootsToAddSeq);
-		for(size_t i = 0; i < numRootsToAdd; i++) {
+		for (size_t i = 0; i < numRootsToAdd; i++)
+		{
 			uint it = rootsToAddSeq[i];
 			addToStrongBucket(&adjacencyList[it - 1], &strongRoots[adjacencyList[it - 1].label]);
 		}
-		
-		//statistics collection
-		#ifdef STATS_2
-			roundTimeVec.push_back(timeEnd - timeStart);
-			numArcScansVec.push_back(numArcScans);
-		#endif
 
-	
-		
-		// Update highestStrongLabel AFTER processing all roots
-        // Find the new highest non-empty bucket
-        while (highestStrongLabel > 0 && strongRoots[highestStrongLabel].empty())
-        {
-            --highestStrongLabel;
-        }
-        // Check if any roots were relabeled higher
-        for (uint i = highestStrongLabel + 1; i <= currentHighLabel + 1; ++i)
-        {
-            if (!strongRoots[i].empty())
-            {
-                highestStrongLabel = i;
-            }
-        }
-		
-		//clear the busy vector for the next round
+#ifdef STATS_2
+		phaseTimeEnd = timer();
+		totalTimePhase[3] += phaseTimeEnd - phaseTimeStart;
+		phaseTimeStart = timer();
+#endif
+
+		// Phase 4: Update highestStrongLabel AFTER processing all roots
+		// Find the new highest non-empty bucket
+		while (highestStrongLabel > 0 && strongRoots[highestStrongLabel].empty())
+		{
+			--highestStrongLabel;
+		}
+		// Check if any roots were relabeled higher
+		for (uint i = highestStrongLabel + 1; i <= currentHighLabel + 1; ++i)
+		{
+			if (!strongRoots[i].empty())
+			{
+				highestStrongLabel = i;
+			}
+		}
+
+#ifdef STATS_2
+		phaseTimeEnd = timer();
+		totalTimePhase[4] += phaseTimeEnd - phaseTimeStart;
+		auto timeEnd = timer();
+		roundTimeVec.push_back(timeEnd - timeStart);
+		numArcScansVec.push_back(numArcScans);
+#endif
+
+		// clear the busy vector for the next round
 		parlay::sequence<uint> busyNodesSeq(numNodes);
 		size_t numBusyNodes = busy_nodes->pack_into(busyNodesSeq);
 
-		for(size_t i = 0; i < numBusyNodes; i++)
+		for (size_t i = 0; i < numBusyNodes; i++)
 			(*is_busy)[busyNodesSeq[i] - 1] = false;
 	}
 
-	#ifdef STATS_2
-		int buckets = 10;
+#ifdef STATS_2
+	int buckets = 10;
 
-		std::cout<< "data, Total rounds = " << round << "\n";
-		for(int i=0; i<buckets; i++)
-		{
-			int bucket_size = (round + buckets - 1) / buckets;
-			int start = i * bucket_size;
-			int end = std::min(start + bucket_size, (int)numHighestLabelVec.size());
-			long long sum = 0;
-			for(int j=start; j<end; j++)
-				sum += numHighestLabelVec[j];
-			std::cout << "data, Bucket " << i << ": Average highest label count = " << ((long double)sum / (long double)(end - start)) << "\n";
-		}
+	std::cout << "data, Total rounds = " << round << "\n";
+	for (int i = 0; i < buckets; i++)
+	{
+		int bucket_size = (round + buckets - 1) / buckets;
+		int start = i * bucket_size;
+		int end = std::min(start + bucket_size, (int)numHighestLabelVec.size());
+		long long sum = 0;
+		for (int j = start; j < end; j++)
+			sum += numHighestLabelVec[j];
+		std::cout << "data, Bucket " << i << ": Average highest label count = " << ((long double)sum / (long double)(end - start)) << "\n";
+	}
 
-		for(int i=0; i<buckets; i++)
-		{
-			int bucket_size = (round + buckets - 1) / buckets;
-			int start = i * bucket_size;
-			int end = std::min(start + bucket_size, (int)roundTimeVec.size());
-			double sum = 0;
-			for(int j=start; j<end; j++)
-				sum += roundTimeVec[j];
-			std::cout << "data, Bucket " << i << ": Total round time = " << sum << " seconds\n";
-		}
+	for (int i = 0; i < buckets; i++)
+	{
+		int bucket_size = (round + buckets - 1) / buckets;
+		int start = i * bucket_size;
+		int end = std::min(start + bucket_size, (int)roundTimeVec.size());
+		double sum = 0;
+		for (int j = start; j < end; j++)
+			sum += roundTimeVec[j];
+		std::cout << "data, Bucket " << i << ": Total round time = " << sum << " seconds\n";
+	}
 
-		for(int i=0; i<buckets; i++)
-		{
-			int bucket_size = (round + buckets - 1) / buckets;
-			int start = i * bucket_size;
-			int end = std::min(start + bucket_size, (int)roundTimeVec.size());
-			long long sum = 0;
-			for(int j=start; j<end; j++)
-				sum += numArcScansVec[j];
-			std::cout << "data, Bucket " << i << ": Average number of arc scans = " << ((long double)sum / (long double)(end - start)) << "\n";
-		}
-	#endif
+	for (int i = 0; i < buckets; i++)
+	{
+		int bucket_size = (round + buckets - 1) / buckets;
+		int start = i * bucket_size;
+		int end = std::min(start + bucket_size, (int)roundTimeVec.size());
+		long long sum = 0;
+		for (int j = start; j < end; j++)
+			sum += numArcScansVec[j];
+		std::cout << "data, Bucket " << i << ": Average number of arc scans = " << ((long double)sum / (long double)(end - start)) << "\n";
+	}
+
+	for(int phase = 1; phase <= 4; phase++)
+	{
+		std::cout << "data, Total time for phase " << phase << " = " << totalTimePhase[phase] << " seconds\n";
+	}
+#endif
 }
 
 static void
-checkOptimality (const uint gap) 
+checkOptimality(const uint gap)
 {
 	uint i, check = 1;
 	ullint mincut = 0;
-	llint *excess = NULL; 
+	llint *excess = NULL;
 
-	excess = (llint *) malloc (numNodes * sizeof (llint));
+	excess = (llint *)malloc(numNodes * sizeof(llint));
 	if (!excess)
 	{
-		printf ("%s Line %d: Out of memory\n", __FILE__, __LINE__);
-		exit (1);
+		printf("%s Line %d: Out of memory\n", __FILE__, __LINE__);
+		exit(1);
 	}
 
-	for (i=0; i<numNodes; ++i)
+	for (i = 0; i < numNodes; ++i)
 	{
 		excess[i] = 0;
 	}
 
-	for (i=0; i<numArcs; ++i) 
+	for (i = 0; i < numArcs; ++i)
 	{
 		if ((arcList[i].from->label >= gap) && (arcList[i].to->label < gap))
 		{
 			mincut += arcList[i].capacity;
 		}
 
-		if ((arcList[i].flow > arcList[i].capacity) || (arcList[i].flow < 0)) 
+		if ((arcList[i].flow > arcList[i].capacity) || (arcList[i].flow < 0))
 		{
 			check = 0;
-			printf("c Capacity constraint violated on arc (%d, %d). Flow = %d, capacity = %d\n", 
-				arcList[i].from->number,
-				arcList[i].to->number,
-				arcList[i].flow,
-				arcList[i].capacity);
+			printf("c Capacity constraint violated on arc (%d, %d). Flow = %d, capacity = %d\n",
+				   arcList[i].from->number,
+				   arcList[i].to->number,
+				   arcList[i].flow,
+				   arcList[i].capacity);
 		}
 		excess[arcList[i].from->number - 1] -= arcList[i].flow;
 		excess[arcList[i].to->number - 1] += arcList[i].flow;
 	}
 
-	for (i=0; i<numNodes; i++) 
+	for (i = 0; i < numNodes; i++)
 	{
-		if ((i != (source-1)) && (i != (sink-1))) 
+		if ((i != (source - 1)) && (i != (sink - 1)))
 		{
-			if (excess[i]) 
+			if (excess[i])
 			{
 				check = 0;
-				printf ("c Flow balance constraint violated in node %d. Excess = %lld\n", 
-					i+1,
-					excess[i]);
+				printf("c Flow balance constraint violated in node %d. Excess = %lld\n",
+					   i + 1,
+					   excess[i]);
 			}
 		}
 	}
 
 	if (check)
 	{
-		printf ("c\nc Solution checks as feasible.\n");
+		printf("c\nc Solution checks as feasible.\n");
 	}
 
 	check = 1;
 
-	if (excess[sink-1] != mincut) 
+	if (excess[sink - 1] != mincut)
 	{
 		check = 0;
 		printf("c Flow is not optimal - max flow does not equal min cut!\nc\n");
 	}
 
-	if (check) 
+	if (check)
 	{
-		printf ("c\nc Solution checks as optimal.\nc \n");
-		printf ("s Max Flow            : %lld\n", mincut);
+		printf("c\nc Solution checks as optimal.\nc \n");
+		printf("s Max Flow            : %lld\n", mincut);
 	}
 
-	free (excess);
+	free(excess);
 	excess = NULL;
 }
 
-
 static void
-quickSort (Arc **arr, const uint first, const uint last)
+quickSort(Arc **arr, const uint first, const uint last)
 {
-	uint i, j, left=first, right=last, x1, x2, x3, mid, pivot, pivotval;
+	uint i, j, left = first, right = last, x1, x2, x3, mid, pivot, pivotval;
 	Arc *swap;
 
-	if ((right-left) <= 5)
-	{// Bubble sort if 5 elements or less
-		for (i=right; (i>left); --i)
+	if ((right - left) <= 5)
+	{ // Bubble sort if 5 elements or less
+		for (i = right; (i > left); --i)
 		{
 			swap = NULL;
-			for (j=left; j<i; ++j)
+			for (j = left; j < i; ++j)
 			{
-				if (arr[j]->flow < arr[j+1]->flow)
+				if (arr[j]->flow < arr[j + 1]->flow)
 				{
 					swap = arr[j];
-					arr[j] = arr[j+1];
-					arr[j+1] = swap;
+					arr[j] = arr[j + 1];
+					arr[j + 1] = swap;
 				}
 			}
 
@@ -1345,14 +1380,14 @@ quickSort (Arc **arr, const uint first, const uint last)
 		return;
 	}
 
-	mid = (first+last)/2;
+	mid = (first + last) / 2;
 
-	x1 = arr[first]->flow; 
-	x2 = arr[mid]->flow; 
+	x1 = arr[first]->flow;
+	x2 = arr[mid]->flow;
 	x3 = arr[last]->flow;
 
 	pivot = mid;
-	
+
 	if (x1 <= x2)
 	{
 		if (x2 > x3)
@@ -1384,7 +1419,7 @@ quickSort (Arc **arr, const uint first, const uint last)
 	arr[first] = arr[pivot];
 	arr[pivot] = swap;
 
-	left = (first+1);
+	left = (first + 1);
 
 	while (left < right)
 	{
@@ -1393,11 +1428,11 @@ quickSort (Arc **arr, const uint first, const uint last)
 			swap = arr[left];
 			arr[left] = arr[right];
 			arr[right] = swap;
-			-- right;
+			--right;
 		}
 		else
 		{
-			++ left;
+			++left;
 		}
 	}
 
@@ -1405,48 +1440,48 @@ quickSort (Arc **arr, const uint first, const uint last)
 	arr[first] = arr[left];
 	arr[left] = swap;
 
-	if (first < (left-1))
+	if (first < (left - 1))
 	{
-		quickSort (arr, first, (left-1));
+		quickSort(arr, first, (left - 1));
 	}
-	
-	if ((left+1) < last)
+
+	if ((left + 1) < last)
 	{
-		quickSort (arr, (left+1), last);
+		quickSort(arr, (left + 1), last);
 	}
 }
 
 static void
-sort (Node * current)
+sort(Node *current)
 {
 	if (current->numOutOfTree > 1)
 	{
-		quickSort (current->outOfTree, 0, (current->numOutOfTree-1));
+		quickSort(current->outOfTree, 0, (current->numOutOfTree - 1));
 	}
 }
 
 static void
-minisort (Node *current) 
+minisort(Node *current)
 {
 	Arc *temp = current->outOfTree[current->nextArc];
 	uint i, size = current->numOutOfTree, tempflow = temp->flow;
 
-	for(i=current->nextArc+1; ((i<size) && (tempflow < current->outOfTree[i]->flow)); ++i)
+	for (i = current->nextArc + 1; ((i < size) && (tempflow < current->outOfTree[i]->flow)); ++i)
 	{
-		current->outOfTree[i-1] = current->outOfTree[i];
+		current->outOfTree[i - 1] = current->outOfTree[i];
 	}
-	current->outOfTree[i-1] = temp;
+	current->outOfTree[i - 1] = temp;
 }
 
 static void
-decompose (Node *excessNode, const uint source, uint *iteration) 
+decompose(Node *excessNode, const uint source, uint *iteration)
 {
 	Node *current = excessNode;
 	Arc *tempArc;
 	uint bottleneck = excessNode->excess;
 
-	for ( ;(current->number != source) && (current->visited < (*iteration)); 
-				current = tempArc->from)
+	for (; (current->number != source) && (current->visited < (*iteration));
+		 current = tempArc->from)
 	{
 		current->visited = (*iteration);
 		tempArc = current->outOfTree[current->nextArc];
@@ -1457,30 +1492,30 @@ decompose (Node *excessNode, const uint source, uint *iteration)
 		}
 	}
 
-	if (current->number == source) 
+	if (current->number == source)
 	{
 		excessNode->excess -= bottleneck;
 		current = excessNode;
 
-		while (current->number != source) 
+		while (current->number != source)
 		{
 			tempArc = current->outOfTree[current->nextArc];
 			tempArc->flow -= bottleneck;
 
-			if (tempArc->flow) 
+			if (tempArc->flow)
 			{
 				minisort(current);
 			}
-			else 
+			else
 			{
-				++ current->nextArc;
+				++current->nextArc;
 			}
 			current = tempArc->from;
 		}
 		return;
 	}
 
-	++ (*iteration);
+	++(*iteration);
 
 	bottleneck = current->outOfTree[current->nextArc]->flow;
 
@@ -1494,9 +1529,9 @@ decompose (Node *excessNode, const uint source, uint *iteration)
 			bottleneck = tempArc->flow;
 		}
 		current = tempArc->from;
-	}	
-	
-	++ (*iteration);
+	}
+
+	++(*iteration);
 
 	while (current->visited < (*iteration))
 	{
@@ -1505,77 +1540,77 @@ decompose (Node *excessNode, const uint source, uint *iteration)
 		tempArc = current->outOfTree[current->nextArc];
 		tempArc->flow -= bottleneck;
 
-		if (tempArc->flow) 
+		if (tempArc->flow)
 		{
 			minisort(current);
 			current = tempArc->from;
 		}
-		else 
+		else
 		{
-			++ current->nextArc;
+			++current->nextArc;
 			current = tempArc->from;
 		}
 	}
 }
 
 static void
-recoverFlow (const uint gap)
+recoverFlow(const uint gap)
 {
 	uint i, j, iteration = 1;
 	Arc *tempArc;
 	Node *tempNode;
 
-	for (i=0; i<adjacencyList[sink-1].numOutOfTree; ++i) 
+	for (i = 0; i < adjacencyList[sink - 1].numOutOfTree; ++i)
 	{
-		tempArc = adjacencyList[sink-1].outOfTree[i];
-		if (tempArc->from->excess < 0) 
+		tempArc = adjacencyList[sink - 1].outOfTree[i];
+		if (tempArc->from->excess < 0)
 		{
-			if ((tempArc->from->excess + (int) tempArc->flow)  < 0)
+			if ((tempArc->from->excess + (int)tempArc->flow) < 0)
 			{
-				tempArc->from->excess += (int) tempArc->flow;				
+				tempArc->from->excess += (int)tempArc->flow;
 				tempArc->flow = 0;
 			}
 			else
 			{
-				tempArc->flow = (uint) (tempArc->from->excess + (int) tempArc->flow);
+				tempArc->flow = (uint)(tempArc->from->excess + (int)tempArc->flow);
 				tempArc->from->excess = 0;
 			}
-		}	
+		}
 	}
 
-	for (i=0; i<adjacencyList[source-1].numOutOfTree; ++i) 
+	for (i = 0; i < adjacencyList[source - 1].numOutOfTree; ++i)
 	{
-		tempArc = adjacencyList[source-1].outOfTree[i];
-		addOutOfTreeNode (tempArc->to, tempArc);
+		tempArc = adjacencyList[source - 1].outOfTree[i];
+		addOutOfTreeNode(tempArc->to, tempArc);
 	}
 
-	adjacencyList[source-1].excess = 0;
-	adjacencyList[sink-1].excess = 0;
+	adjacencyList[source - 1].excess = 0;
+	adjacencyList[sink - 1].excess = 0;
 
-	for (i=0; i<numNodes; ++i) 
+	for (i = 0; i < numNodes; ++i)
 	{
 		tempNode = &adjacencyList[i];
 
-		if ((i == (source-1)) || (i == (sink-1)))
+		if ((i == (source - 1)) || (i == (sink - 1)))
 		{
 			continue;
 		}
 
-		if (tempNode->label >= gap) 
+		if (tempNode->label >= gap)
 		{
 			tempNode->nextArc = 0;
 			if ((tempNode->parent) && (tempNode->arcToParent->flow))
 			{
-				addOutOfTreeNode (tempNode->arcToParent->to, tempNode->arcToParent);
+				addOutOfTreeNode(tempNode->arcToParent->to, tempNode->arcToParent);
 			}
 
-			for (j=0; j<tempNode->numOutOfTree; ++j) 
+			for (j = 0; j < tempNode->numOutOfTree; ++j)
 			{
-				if (!tempNode->outOfTree[j]->flow) 
+				if (!tempNode->outOfTree[j]->flow)
 				{
-					-- tempNode->numOutOfTree;
+					--tempNode->numOutOfTree;
 					tempNode->outOfTree[j] = tempNode->outOfTree[tempNode->numOutOfTree];
-					-- j;
+					--j;
 				}
 			}
 
@@ -1583,115 +1618,116 @@ recoverFlow (const uint gap)
 		}
 	}
 
-	for (i=0; i<numNodes; ++i) 
+	for (i = 0; i < numNodes; ++i)
 	{
 		tempNode = &adjacencyList[i];
-		while (tempNode->excess > 0) 
+		while (tempNode->excess > 0)
 		{
-			++ iteration;
+			++iteration;
 			decompose(tempNode, source, &iteration);
 		}
 	}
 }
 
-
 static void
-freeMemory (void)
+freeMemory(void)
 {
 	uint i;
 
 	delete[] strongRoots;
 
-	for (i=0; i<numNodes; ++i)
+	for (i = 0; i < numNodes; ++i)
 	{
 		if (adjacencyList[i].outOfTree)
 		{
-			free (adjacencyList[i].outOfTree);
+			free(adjacencyList[i].outOfTree);
 		}
 	}
 
-	free (adjacencyList);
+	free(adjacencyList);
 
-	free (labelCount);
+	free(labelCount);
 
-	free (arcList);
+	free(arcList);
 }
 
-int 
-main(int argc, char ** argv) 
+int main(int argc, char **argv)
 {
 	double readStart, readEnd, initStart, initEnd, solveStart, solveEnd, flowStart, flowEnd;
 	uint gap;
 
-	printf ("c Highest label pseudoflow algorithm (Version 3.23)\n");
-	printf ("c Using LIFO buckets\n");
+	printf("c Highest label pseudoflow algorithm (Version 3.23)\n");
+	printf("c Using LIFO buckets\n");
 
-	readStart = timer ();
+	readStart = timer();
 
-	if(argc < 2)
+	if (argc < 2)
 	{
-		std::cout<<"Missing input file";
+		std::cout << "Missing input file";
 		exit(0);
 	}
 
 	Reading::read_graph(argv[1]);
 
-	//Reading::read_binary_format("/data/graphs/CHEM_2.bin");
-	//Reading::read_pbbs_format("/data/graphs/CHEM_2_wgh.adj");
+	// Reading::read_binary_format("/data/graphs/CHEM_2.bin");
+	// Reading::read_pbbs_format("/data/graphs/CHEM_2_wgh.adj");
 
-	//Reading::readDimacsFileCreateList ();
-	readEnd=timer ();
+	// Reading::readDimacsFileCreateList ();
+	readEnd = timer();
 
 #ifdef PROGRESS
-	printf ("c Finished reading file.\n"); fflush (stdout);
+	printf("c Finished reading file.\n");
+	fflush(stdout);
 #endif
 
 	initStart = readEnd;
-	simpleInitialization ();
-	initEnd=timer ();
+	simpleInitialization();
+	initEnd = timer();
 
 #ifdef PROGRESS
-	printf ("c Finished initialization.\n"); fflush (stdout);
+	printf("c Finished initialization.\n");
+	fflush(stdout);
 #endif
 
-	solveStart=initEnd;
-	pseudoflowPhase1 ();
-	solveEnd=timer ();
+	solveStart = initEnd;
+	pseudoflowPhase1();
+	solveEnd = timer();
 
 #ifdef PROGRESS
-	printf ("c Finished phase 1.\n"); fflush (stdout);
+	printf("c Finished phase 1.\n");
+	fflush(stdout);
 #endif
 
 	gap = numNodes;
 
 	flowStart = solveEnd;
 	recoverFlow(gap);
-	flowEnd=timer ();
+	flowEnd = timer();
 
-	printf ("c Number of nodes     : %d\n", numNodes);
-	printf ("c Number of arcs      : %d\n", numArcs);
-	printf ("c Time to read        : %.3f\n", (readEnd-readStart));
-	printf ("c Time to initialize  : %.3f\n", (initEnd-initStart));
-	printf ("c Time to min cut     : %.3f\n", (solveEnd-initEnd));
-	printf ("c Time to max flow    : %.3f\n", (flowEnd-initEnd));
+	printf("c Number of nodes     : %d\n", numNodes);
+	printf("c Number of arcs      : %d\n", numArcs);
+	printf("c Time to read        : %.3f\n", (readEnd - readStart));
+	printf("c Time to initialize  : %.3f\n", (initEnd - initStart));
+	printf("c Time to min cut     : %.3f\n", (solveEnd - initEnd));
+	printf("c Time to max flow    : %.3f\n", (flowEnd - initEnd));
 #ifdef STATS
-	printf ("c Number of arc scans : %lld\n", numArcScans);
-	printf ("c Number of mergers   : %d\n", numMergers);
-	printf ("c Number of pushes    : %lld\n", numPushes);
-	printf ("c Number of relabels  : %d\n", numRelabels);
-	printf ("c Number of gaps      : %d\n", numGaps);
+	printf("c Number of arc scans : %lld\n", numArcScans);
+	printf("c Number of mergers   : %d\n", numMergers);
+	printf("c Number of pushes    : %lld\n", numPushes);
+	printf("c Number of relabels  : %d\n", numRelabels);
+	printf("c Number of gaps      : %d\n", numGaps);
 #endif
-	checkOptimality (gap);
+	checkOptimality(gap);
 
 #ifdef DISPLAY_CUT
-	displayCut (gap);
+	displayCut(gap);
 #endif
 
 #ifdef DISPLAY_FLOW
-	displayFlow ();
+	displayFlow();
 #endif
 
-	freeMemory ();
+	freeMemory();
 
 	return 0;
 }
