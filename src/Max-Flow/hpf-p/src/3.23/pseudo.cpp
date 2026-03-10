@@ -80,7 +80,7 @@ typedef struct merge_info
 
 } MergeInfo;
 
-typedef parlay::sequence<Node *> Root;
+typedef std::vector<Node *> Root;
 
 //---------------  Global variables ------------------
 bool weighted = false;
@@ -1133,6 +1133,9 @@ pseudoflowPhase1(void)
 	Node *strongRoot;
 	long long round = 0;
 
+	parlay::sequence<uint> rootsToAddSeq(numNodes);
+	parlay::sequence<uint> busyNodesSeq(numNodes);
+
 	while ((strongRoot = getHighestStrongRoot()))
 	{
 		round++;
@@ -1140,8 +1143,10 @@ pseudoflowPhase1(void)
 
 #ifdef STATS_2
 		numArcScans = 0;
+		auto phaseTimeStart = timer();
 #endif
 
+		//Phase 1: get all highest label roots
 		std::vector<Node *> currentHighRoots;
 		currentHighRoots.push_back(strongRoot);
 
@@ -1155,22 +1160,21 @@ pseudoflowPhase1(void)
 		}
 
 #ifdef STATS_2
+		auto phaseTimeEnd = timer();
+		totalTimePhase[1] += phaseTimeEnd - phaseTimeStart;
 		numHighestLabelVec.push_back(currentHighRoots.size());
 		auto timeStart = timer();
+		phaseTimeStart = timer();
 #endif
-
-#ifdef STATS_2
-		auto phaseTimeStart = timer();
-#endif
-		// Phase 1: find all the merges to be done in this round in parallel
+		// Phase 2: find all the merges to be done in this round in parallel
 		auto mergeInfoVec = parlay::map(currentHighRoots, [&](Node *strongRoot)
 										{ return processRoot(strongRoot); });
 #ifdef STATS_2
-		auto phaseTimeEnd = timer();
-		totalTimePhase[1] += phaseTimeEnd - phaseTimeStart;
+		phaseTimeEnd = timer();
+		totalTimePhase[2] += phaseTimeEnd - phaseTimeStart;
 		phaseTimeStart = timer();
 #endif
-		// Phase 2: perform all the merges and push excess in parallel
+		// Phase 3: perform all the merges and push excess in parallel
 		parlay::parallel_for(0, mergeInfoVec.size(), [&](size_t i)
 							 {
 				if(mergeInfoVec[i].strongNode)
@@ -1180,12 +1184,11 @@ pseudoflowPhase1(void)
 				} });
 #ifdef STATS_2
 	phaseTimeEnd = timer();
-	totalTimePhase[2] += phaseTimeEnd - phaseTimeStart;
+	totalTimePhase[3] += phaseTimeEnd - phaseTimeStart;
 	phaseTimeStart = timer();
 #endif
 
-		// Phase 3: add the necessary roots to the strong buckets after processing all of them in parallel
-		parlay::sequence<uint> rootsToAddSeq(numNodes);
+		// Phase 4: add the necessary roots to the strong buckets after processing all of them in parallel
 		size_t numRootsToAdd = roots_to_add->pack_into(rootsToAddSeq);
 		for (size_t i = 0; i < numRootsToAdd; i++)
 		{
@@ -1195,11 +1198,11 @@ pseudoflowPhase1(void)
 
 #ifdef STATS_2
 		phaseTimeEnd = timer();
-		totalTimePhase[3] += phaseTimeEnd - phaseTimeStart;
+		totalTimePhase[4] += phaseTimeEnd - phaseTimeStart;
 		phaseTimeStart = timer();
 #endif
 
-		// Phase 4: Update highestStrongLabel AFTER processing all roots
+		// Phase 5: Update highestStrongLabel AFTER processing all roots
 		// Find the new highest non-empty bucket
 		while (highestStrongLabel > 0 && strongRoots[highestStrongLabel].empty())
 		{
@@ -1216,18 +1219,24 @@ pseudoflowPhase1(void)
 
 #ifdef STATS_2
 		phaseTimeEnd = timer();
-		totalTimePhase[4] += phaseTimeEnd - phaseTimeStart;
-		auto timeEnd = timer();
-		roundTimeVec.push_back(timeEnd - timeStart);
-		numArcScansVec.push_back(numArcScans);
+		totalTimePhase[5] += phaseTimeEnd - phaseTimeStart;
+		phaseTimeStart = timer();
 #endif
 
-		// clear the busy vector for the next round
-		parlay::sequence<uint> busyNodesSeq(numNodes);
+		// Phase 6:	Clear the busy vector for the next round
 		size_t numBusyNodes = busy_nodes->pack_into(busyNodesSeq);
 
 		for (size_t i = 0; i < numBusyNodes; i++)
 			(*is_busy)[busyNodesSeq[i] - 1] = false;
+
+#ifdef STATS_2
+		phaseTimeEnd = timer();
+		totalTimePhase[6] += phaseTimeEnd - phaseTimeStart;
+
+		auto timeEnd = timer();
+		roundTimeVec.push_back(timeEnd - timeStart);
+		numArcScansVec.push_back(numArcScans);
+#endif
 	}
 
 #ifdef STATS_2
@@ -1267,7 +1276,7 @@ pseudoflowPhase1(void)
 		std::cout << "data, Bucket " << i << ": Average number of arc scans = " << ((long double)sum / (long double)(end - start)) << "\n";
 	}
 
-	for(int phase = 1; phase <= 4; phase++)
+	for(int phase = 1; phase <= 6; phase++)
 	{
 		std::cout << "data, Total time for phase " << phase << " = " << totalTimePhase[phase] << " seconds\n";
 	}
