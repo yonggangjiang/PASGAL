@@ -73,10 +73,11 @@ typedef struct node
 
 typedef struct merge_info
 {
-	Node *strongRoot, *strongNode, *weakNode;
+	Node *strongRoot, *strongNode, *weakNode, *weakRoot;
 	Arc *out;
 
-	merge_info(Node *strongRoot, Node *strongNode, Node *weakNode, Arc *out) : strongRoot(strongRoot), strongNode(strongNode), weakNode(weakNode), out(out) {}
+	merge_info(Node *strongRoot, Node *strongNode, Node *weakNode, Node *weakRoot, Arc *out) : 
+		strongRoot(strongRoot), strongNode(strongNode), weakNode(weakNode), weakRoot(weakRoot), out(out) {}
 
 } MergeInfo;
 
@@ -101,7 +102,6 @@ static long long strongRootCount = 0;
 
 //---------------  Sync variables ---------------------
 parlay::sequence<uint8_t> *is_busy;
-hashbag<uint> *busy_nodes;
 
 hashbag<uint> *roots_to_add;
 //-----------------------------------------------------
@@ -411,7 +411,6 @@ namespace Reading
 		adjacencyList = (Node *)malloc(numNodes * sizeof(Node));
 		strongRoots = new Root[numNodes]();
 		is_busy = new parlay::sequence<uint8_t>(numNodes);
-		busy_nodes = new hashbag<uint>(numNodes);
 		roots_to_add = new hashbag<uint>(numNodes);
 		labelCount = (uint *)malloc(numNodes * sizeof(uint));
 		arcList = (Arc *)malloc(numArcs * sizeof(Arc));
@@ -554,7 +553,6 @@ namespace Reading
 
 				strongRoots = new Root[numNodes]();
 				is_busy = new parlay::sequence<uint8_t>(numNodes);
-				busy_nodes = new hashbag<uint>(numNodes);
 				roots_to_add = new hashbag<uint>(numNodes);
 
 				if ((labelCount = (uint *)malloc(numNodes * sizeof(uint))) == NULL)
@@ -906,7 +904,7 @@ bool can_push(Node *y)
 	assert(y != NULL);
 	if (compare_and_swap(&((*is_busy)[y->number - 1]), (uint8_t)false, (uint8_t)true))
 	{
-		busy_nodes->insert(y->number);
+		//busy_nodes->insert(y->number);
 		return true;
 	}
 
@@ -914,13 +912,10 @@ bool can_push(Node *y)
 }
 
 static Arc *
-findWeakNode(Node *strongNode, Node **weakNode, bool &skipped_arc)
+findWeakNode(Node *strongNode, Node **weakNode)
 {
 	uint i, size;
 	Arc *out;
-
-	uint firstSkippedArc = UINT_MAX;
-	uint skippedPrefix = UINT_MAX;
 
 	size = strongNode->numOutOfTree;
 
@@ -933,22 +928,7 @@ findWeakNode(Node *strongNode, Node **weakNode, bool &skipped_arc)
 
 		if (strongNode->outOfTree[i]->to->label == (highestStrongLabel - 1))
 		{
-			if (!can_push(getRoot(strongNode->outOfTree[i]->to)))
-			{
-				skipped_arc = true;
-				firstSkippedArc = std::min(firstSkippedArc, i);
-
-				if(skippedPrefix == UINT_MAX)
-					skippedPrefix = i;
-				else
-				{
-					skippedPrefix ++;
-					std::swap(strongNode->outOfTree[i], strongNode->outOfTree[skippedPrefix]);
-				}
-				continue;
-			}
-
-			strongNode->nextArc = std::min(i, firstSkippedArc);
+			strongNode->nextArc = i;
 			out = strongNode->outOfTree[i];
 			(*weakNode) = out->to;
 			--strongNode->numOutOfTree;
@@ -957,22 +937,7 @@ findWeakNode(Node *strongNode, Node **weakNode, bool &skipped_arc)
 		}
 		else if (strongNode->outOfTree[i]->from->label == (highestStrongLabel - 1))
 		{
-			if (!can_push(getRoot(strongNode->outOfTree[i]->from)))
-			{
-				skipped_arc = true;
-				firstSkippedArc = std::min(firstSkippedArc, i);
-
-				if(skippedPrefix == UINT_MAX)
-					skippedPrefix = i;
-				else
-				{
-					skippedPrefix ++;
-					std::swap(strongNode->outOfTree[i], strongNode->outOfTree[skippedPrefix]);
-				}
-				continue;
-			}
-
-			strongNode->nextArc = std::min(i, firstSkippedArc);
+			strongNode->nextArc = i;
 			out = strongNode->outOfTree[i];
 			(*weakNode) = out->from;
 			--strongNode->numOutOfTree;
@@ -981,16 +946,13 @@ findWeakNode(Node *strongNode, Node **weakNode, bool &skipped_arc)
 		}
 	}
 
-	if (!skipped_arc)
-		strongNode->nextArc = strongNode->numOutOfTree;
-	else
-		strongNode->nextArc = firstSkippedArc;
+	strongNode->nextArc = strongNode->numOutOfTree;
 
 	return NULL;
 }
 
 static void
-checkChildren(Node *curNode, bool skipped_arc)
+checkChildren(Node *curNode)
 {
 	for (; (curNode->nextScan); curNode->nextScan = curNode->nextScan->next)
 	{
@@ -1000,8 +962,6 @@ checkChildren(Node *curNode, bool skipped_arc)
 		}
 	}
 
-	if (!skipped_arc)
-	{
 		write_add(&labelCount[curNode->label], -1);
 		++curNode->label;
 		write_add(&labelCount[curNode->label], 1);
@@ -1011,7 +971,6 @@ checkChildren(Node *curNode, bool skipped_arc)
 #endif
 
 		curNode->nextArc = 0;
-	}
 }
 
 static MergeInfo
@@ -1019,13 +978,12 @@ processRoot(Node *strongRoot)
 {
 	Node *temp, *strongNode = strongRoot, *weakNode;
 	Arc *out;
-	bool skipped_arc = false;
 
 	strongRoot->nextScan = strongRoot->childList;
 
-	if ((out = findWeakNode(strongRoot, &weakNode, skipped_arc)))
+	if ((out = findWeakNode(strongRoot, &weakNode)))
 	{
-		return MergeInfo(strongRoot, strongNode, weakNode, out);
+		return MergeInfo(strongRoot, strongNode, weakNode, nullptr, out);
 
 		/*
 		merge (weakNode, strongNode, out);
@@ -1034,7 +992,7 @@ processRoot(Node *strongRoot)
 		*/
 	}
 
-	checkChildren(strongRoot, skipped_arc);
+	checkChildren(strongRoot);
 
 	while (strongNode)
 	{
@@ -1045,9 +1003,9 @@ processRoot(Node *strongRoot)
 			strongNode = temp;
 			strongNode->nextScan = strongNode->childList;
 
-			if ((out = findWeakNode(strongNode, &weakNode, skipped_arc)))
+			if ((out = findWeakNode(strongNode, &weakNode)))
 			{
-				return MergeInfo(strongRoot, strongNode, weakNode, out);
+				return MergeInfo(strongRoot, strongNode, weakNode, nullptr, out);
 
 				/*
 				merge (weakNode, strongNode, out);
@@ -1056,18 +1014,18 @@ processRoot(Node *strongRoot)
 				*/
 			}
 
-			checkChildren(strongNode, skipped_arc);
+			checkChildren(strongNode);
 		}
 
 		if ((strongNode = strongNode->parent))
 		{
-			checkChildren(strongNode, skipped_arc);
+			checkChildren(strongNode);
 		}
 	}
 
 	roots_to_add->insert(strongRoot->number);
 	// addToStrongBucket (strongRoot, &strongRoots[strongRoot->label]);
-	return MergeInfo(NULL, NULL, NULL, NULL);
+	return MergeInfo(NULL, NULL, NULL, NULL, NULL);
 }
 
 static Node *
@@ -1155,7 +1113,7 @@ pseudoflowPhase1(void)
 	parlay::sequence<uint> rootsToAddSeq(numNodes);
 	parlay::sequence<uint> busyNodesSeq(numNodes);
 
-	parlay::sequence<MergeInfo> mergeInfoVec(numNodes, {nullptr, nullptr, nullptr, nullptr});
+	parlay::sequence<MergeInfo> mergeInfoVec(numNodes, {nullptr, nullptr, nullptr, nullptr, nullptr});
 
 	std::vector<Node *> curentHighRoots;
 
@@ -1194,6 +1152,23 @@ pseudoflowPhase1(void)
 		parlay::parallel_for(0, curentHighRoots.size(), [&](size_t i)
 			{
 				mergeInfoVec[i] = processRoot(curentHighRoots[i]);
+				
+				if(mergeInfoVec[i].strongNode)
+					mergeInfoVec[i].weakRoot = getRoot(mergeInfoVec[i].weakNode);
+
+				if( mergeInfoVec[i].strongNode && 
+					!can_push(mergeInfoVec[i].weakRoot) )
+				{
+					roots_to_add->insert(mergeInfoVec[i].strongRoot->number);
+
+					//readding the edge to the list
+					Node* temp = mergeInfoVec[i].strongNode;
+					temp->numOutOfTree++;
+					temp->outOfTree[temp->numOutOfTree - 1] = temp->outOfTree[temp->nextArc];
+					temp->outOfTree[temp->nextArc] = mergeInfoVec[i].out;
+
+					mergeInfoVec[i] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+				}
 			});
 		
 		/*
@@ -1210,6 +1185,8 @@ pseudoflowPhase1(void)
 			{
 				if(mergeInfoVec[i].strongNode)
 				{
+					(*is_busy)[mergeInfoVec[i].weakRoot->number - 1] = false;
+
 					merge(mergeInfoVec[i].weakNode, mergeInfoVec[i].strongNode, mergeInfoVec[i].out);
 					pushExcess(mergeInfoVec[i].strongRoot);
 				} 
@@ -1254,20 +1231,9 @@ pseudoflowPhase1(void)
 #ifdef STATS_2
 		phaseTimeEnd = timer();
 		totalTimePhase[5] += phaseTimeEnd - phaseTimeStart;
-		phaseTimeStart = timer();
 #endif
 
-		// Phase 6:	Clear the busy vector for the next round
-		size_t numBusyNodes = busy_nodes->pack_into(busyNodesSeq);
-
-		for (size_t i = 0; i < numBusyNodes; i++)
-			(*is_busy)[busyNodesSeq[i] - 1] = false;
-
 #ifdef STATS_2
-		phaseTimeEnd = timer();
-		totalTimePhase[6] += phaseTimeEnd - phaseTimeStart;
-		numBusyNodesVec.push_back(numBusyNodes);
-
 		auto timeEnd = timer();
 		roundTimeVec.push_back(timeEnd - timeStart);
 		numArcScansVec.push_back(numArcScans);
@@ -1322,18 +1288,7 @@ pseudoflowPhase1(void)
 		std::cout << "data, Bucket " << i << ": Average number of roots to add = " << ((long double)sum / (long double)(end - start)) << "\n";
 	}
 
-	for(int i=0; i<buckets; i++)
-	{
-		int bucket_size = (round + buckets - 1) / buckets;
-		int start = i * bucket_size;
-		int end = std::min(start + bucket_size, (int)numBusyNodesVec.size());
-		long long sum = 0;
-		for (int j = start; j < end; j++)
-			sum += numBusyNodesVec[j];
-		std::cout << "data, Bucket " << i << ": Average number of busy nodes = " << ((long double)sum / (long double)(end - start)) << "\n";
-	}
-
-	std::string phaseName[7] = 
+	std::string phaseName[6] = 
 		{	
 			"", 
 			"Get highest label roots", 
@@ -1341,10 +1296,9 @@ pseudoflowPhase1(void)
 			"Perform merges and push excess", 
 			"Add new strong roots to buckets", 
 			"Update highest strong label", 
-			"Clear busy vector"
 		};
 
-	for(int phase = 1; phase <= 6; phase++)
+	for(int phase = 1; phase <= 5; phase++)
 	{
 		std::cout 	<< "data, Total time for phase " << phase 
 					<< '(' << phaseName[phase] << ") = " 
