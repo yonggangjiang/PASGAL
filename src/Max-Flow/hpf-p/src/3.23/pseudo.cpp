@@ -100,7 +100,7 @@ static long long strongRootCount = 0;
 //-----------------------------------------------------
 
 //---------------  Sync variables ---------------------
-parlay::sequence<bool> *is_busy;
+parlay::sequence<uint8_t> *is_busy;
 hashbag<uint> *busy_nodes;
 
 hashbag<uint> *roots_to_add;
@@ -110,6 +110,9 @@ hashbag<uint> *roots_to_add;
 std::vector<uint> numHighestLabelVec;
 std::vector<double> roundTimeVec;
 std::vector<ullint> numArcScansVec;
+
+std::vector<uint> numRootsToAddVec;
+std::vector<uint> numBusyNodesVec;
 
 long double totalTimePhase[10];
 #endif
@@ -407,7 +410,7 @@ namespace Reading
 
 		adjacencyList = (Node *)malloc(numNodes * sizeof(Node));
 		strongRoots = new Root[numNodes]();
-		is_busy = new parlay::sequence<bool>(numNodes);
+		is_busy = new parlay::sequence<uint8_t>(numNodes);
 		busy_nodes = new hashbag<uint>(numNodes);
 		roots_to_add = new hashbag<uint>(numNodes);
 		labelCount = (uint *)malloc(numNodes * sizeof(uint));
@@ -550,7 +553,7 @@ namespace Reading
 				}
 
 				strongRoots = new Root[numNodes]();
-				is_busy = new parlay::sequence<bool>(numNodes);
+				is_busy = new parlay::sequence<uint8_t>(numNodes);
 				busy_nodes = new hashbag<uint>(numNodes);
 				roots_to_add = new hashbag<uint>(numNodes);
 
@@ -901,7 +904,7 @@ bool can_push(Node *y)
 	// return true;
 
 	assert(y != NULL);
-	if (compare_and_swap(&((*is_busy)[y->number - 1]), false, true))
+	if (compare_and_swap(&((*is_busy)[y->number - 1]), (uint8_t)false, (uint8_t)true))
 	{
 		busy_nodes->insert(y->number);
 		return true;
@@ -917,7 +920,7 @@ findWeakNode(Node *strongNode, Node **weakNode, bool &skipped_arc)
 	Arc *out;
 
 	uint firstSkippedArc = UINT_MAX;
-	uint begining = strongNode->nextArc;
+	uint skippedPrefix = UINT_MAX;
 
 	size = strongNode->numOutOfTree;
 
@@ -934,6 +937,14 @@ findWeakNode(Node *strongNode, Node **weakNode, bool &skipped_arc)
 			{
 				skipped_arc = true;
 				firstSkippedArc = std::min(firstSkippedArc, i);
+
+				if(skippedPrefix == UINT_MAX)
+					skippedPrefix = i;
+				else
+				{
+					skippedPrefix ++;
+					std::swap(strongNode->outOfTree[i], strongNode->outOfTree[skippedPrefix]);
+				}
 				continue;
 			}
 
@@ -950,6 +961,14 @@ findWeakNode(Node *strongNode, Node **weakNode, bool &skipped_arc)
 			{
 				skipped_arc = true;
 				firstSkippedArc = std::min(firstSkippedArc, i);
+
+				if(skippedPrefix == UINT_MAX)
+					skippedPrefix = i;
+				else
+				{
+					skippedPrefix ++;
+					std::swap(strongNode->outOfTree[i], strongNode->outOfTree[skippedPrefix]);
+				}
 				continue;
 			}
 
@@ -1136,6 +1155,10 @@ pseudoflowPhase1(void)
 	parlay::sequence<uint> rootsToAddSeq(numNodes);
 	parlay::sequence<uint> busyNodesSeq(numNodes);
 
+	parlay::sequence<MergeInfo> mergeInfoVec(numNodes, {nullptr, nullptr, nullptr, nullptr});
+
+	std::vector<Node *> curentHighRoots;
+
 	while ((strongRoot = getHighestStrongRoot()))
 	{
 		round++;
@@ -1147,8 +1170,8 @@ pseudoflowPhase1(void)
 #endif
 
 		//Phase 1: get all highest label roots
-		std::vector<Node *> currentHighRoots;
-		currentHighRoots.push_back(strongRoot);
+		curentHighRoots.clear();
+		curentHighRoots.push_back(strongRoot);
 
 		while (!strongRoots[currentHighLabel].empty())
 		{
@@ -1156,32 +1179,42 @@ pseudoflowPhase1(void)
 			strongRoots[currentHighLabel].pop_back();
 			--strongRootCount;
 			nextStrongRoot->next = NULL;
-			currentHighRoots.push_back(nextStrongRoot);
+			curentHighRoots.push_back(nextStrongRoot);
 		}
 
 #ifdef STATS_2
 		auto phaseTimeEnd = timer();
 		totalTimePhase[1] += phaseTimeEnd - phaseTimeStart;
-		numHighestLabelVec.push_back(currentHighRoots.size());
+		numHighestLabelVec.push_back(curentHighRoots.size());
 		auto timeStart = timer();
 		phaseTimeStart = timer();
 #endif
 		// Phase 2: find all the merges to be done in this round in parallel
-		auto mergeInfoVec = parlay::map(currentHighRoots, [&](Node *strongRoot)
+		
+		parlay::parallel_for(0, curentHighRoots.size(), [&](size_t i)
+			{
+				mergeInfoVec[i] = processRoot(curentHighRoots[i]);
+			});
+		
+		/*
+		auto mergeInfoVec = parlay::map(curentHighRoots, [&](Node *strongRoot)
 										{ return processRoot(strongRoot); });
+		*/
 #ifdef STATS_2
 		phaseTimeEnd = timer();
 		totalTimePhase[2] += phaseTimeEnd - phaseTimeStart;
 		phaseTimeStart = timer();
 #endif
 		// Phase 3: perform all the merges and push excess in parallel
-		parlay::parallel_for(0, mergeInfoVec.size(), [&](size_t i)
-							 {
+		parlay::parallel_for(0, curentHighRoots.size(), [&](size_t i)
+			{
 				if(mergeInfoVec[i].strongNode)
 				{
 					merge(mergeInfoVec[i].weakNode, mergeInfoVec[i].strongNode, mergeInfoVec[i].out);
 					pushExcess(mergeInfoVec[i].strongRoot);
-				} });
+				} 
+			});
+
 #ifdef STATS_2
 	phaseTimeEnd = timer();
 	totalTimePhase[3] += phaseTimeEnd - phaseTimeStart;
@@ -1198,6 +1231,7 @@ pseudoflowPhase1(void)
 
 #ifdef STATS_2
 		phaseTimeEnd = timer();
+		numRootsToAddVec.push_back(numRootsToAdd);
 		totalTimePhase[4] += phaseTimeEnd - phaseTimeStart;
 		phaseTimeStart = timer();
 #endif
@@ -1232,6 +1266,7 @@ pseudoflowPhase1(void)
 #ifdef STATS_2
 		phaseTimeEnd = timer();
 		totalTimePhase[6] += phaseTimeEnd - phaseTimeStart;
+		numBusyNodesVec.push_back(numBusyNodes);
 
 		auto timeEnd = timer();
 		roundTimeVec.push_back(timeEnd - timeStart);
@@ -1276,9 +1311,44 @@ pseudoflowPhase1(void)
 		std::cout << "data, Bucket " << i << ": Average number of arc scans = " << ((long double)sum / (long double)(end - start)) << "\n";
 	}
 
+	for(int i=0; i<buckets; i++)
+	{
+		int bucket_size = (round + buckets - 1) / buckets;
+		int start = i * bucket_size;
+		int end = std::min(start + bucket_size, (int)numRootsToAddVec.size());
+		long long sum = 0;
+		for (int j = start; j < end; j++)
+			sum += numRootsToAddVec[j];
+		std::cout << "data, Bucket " << i << ": Average number of roots to add = " << ((long double)sum / (long double)(end - start)) << "\n";
+	}
+
+	for(int i=0; i<buckets; i++)
+	{
+		int bucket_size = (round + buckets - 1) / buckets;
+		int start = i * bucket_size;
+		int end = std::min(start + bucket_size, (int)numBusyNodesVec.size());
+		long long sum = 0;
+		for (int j = start; j < end; j++)
+			sum += numBusyNodesVec[j];
+		std::cout << "data, Bucket " << i << ": Average number of busy nodes = " << ((long double)sum / (long double)(end - start)) << "\n";
+	}
+
+	std::string phaseName[7] = 
+		{	
+			"", 
+			"Get highest label roots", 
+			"Process roots to find merges", 
+			"Perform merges and push excess", 
+			"Add new strong roots to buckets", 
+			"Update highest strong label", 
+			"Clear busy vector"
+		};
+
 	for(int phase = 1; phase <= 6; phase++)
 	{
-		std::cout << "data, Total time for phase " << phase << " = " << totalTimePhase[phase] << " seconds\n";
+		std::cout 	<< "data, Total time for phase " << phase 
+					<< '(' << phaseName[phase] << ") = " 
+					<< totalTimePhase[phase] << " seconds\n";
 	}
 #endif
 }
