@@ -542,7 +542,7 @@ namespace Reading
 			switch (*line)
 			{
 			case 'p':
-
+			{
 				sscanf(line, "%c %s %d %d", &ch, word, &numNodes, &numArcs);
 
 				if ((adjacencyList = (Node *)malloc(numNodes * sizeof(Node))) == NULL)
@@ -567,11 +567,22 @@ namespace Reading
 					exit(1);
 				}
 
+				auto start = timer();
+				parlay::parallel_for(0, numNodes, [&](size_t i)
+					{
+						initializeNode(&adjacencyList[i], (i + 1));
+						labelCount[i] = 0;
+					});		
+				
+				/*
 				for (i = 0; i < numNodes; ++i)
 				{
 					initializeNode(&adjacencyList[i], (i + 1));
 					labelCount[i] = 0;
 				}
+				*/
+				auto end = timer();
+				std::cout << "Time to initialize nodes: " << end - start << " seconds\n";
 
 				for (i = 0; i < numArcs; ++i)
 				{
@@ -582,7 +593,7 @@ namespace Reading
 				last = numArcs - 1;
 
 				break;
-
+			}
 			case 'a':
 
 				sscanf(line, "%c %d %d %d", &ch, &from, &to, &capacity);
