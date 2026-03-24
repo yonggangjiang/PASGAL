@@ -1118,7 +1118,7 @@ long long countHighestLabelRoots(void)
 static void
 pseudoflowPhase1(void)
 {
-	int serial_limit = 0;
+	int serial_limit = 400;
 
 	Node *strongRoot;
 	long long round = 0;
