@@ -1118,6 +1118,8 @@ long long countHighestLabelRoots(void)
 static void
 pseudoflowPhase1(void)
 {
+	int serial_limit = 0;
+
 	Node *strongRoot;
 	long long round = 0;
 
@@ -1159,13 +1161,44 @@ pseudoflowPhase1(void)
 		phaseTimeStart = timer();
 #endif
 		// Phase 2: find all the merges to be done in this round in parallel
-		
-		parlay::parallel_for(0, curentHighRoots.size(), [&](size_t i)
+		if(curentHighRoots.size() < serial_limit)
+		{
+			for(size_t i=0; i<curentHighRoots.size(); i++)
 			{
 				mergeInfoVec[i] = processRoot(curentHighRoots[i]);
 				
 				if(mergeInfoVec[i].strongNode)
+				{
 					mergeInfoVec[i].weakRoot = getRoot(mergeInfoVec[i].weakNode);
+				}
+				
+
+				if( mergeInfoVec[i].strongNode && 
+					!can_push(mergeInfoVec[i].weakRoot) )
+				{
+					roots_to_add->insert(mergeInfoVec[i].strongRoot->number);
+
+					//readding the edge to the list
+					Node* temp = mergeInfoVec[i].strongNode;
+					temp->numOutOfTree++;
+					temp->outOfTree[temp->numOutOfTree - 1] = temp->outOfTree[temp->nextArc];
+					temp->outOfTree[temp->nextArc] = mergeInfoVec[i].out;
+
+					mergeInfoVec[i] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+				}
+			}
+		}
+		else
+		{
+			parlay::parallel_for(0, curentHighRoots.size(), [&](size_t i)
+			{
+				mergeInfoVec[i] = processRoot(curentHighRoots[i]);
+					
+				if(mergeInfoVec[i].strongNode)
+				{
+					mergeInfoVec[i].weakRoot = getRoot(mergeInfoVec[i].weakNode);
+				}
+					
 
 				if( mergeInfoVec[i].strongNode && 
 					!can_push(mergeInfoVec[i].weakRoot) )
@@ -1181,18 +1214,29 @@ pseudoflowPhase1(void)
 					mergeInfoVec[i] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 				}
 			});
-		
-		/*
-		auto mergeInfoVec = parlay::map(curentHighRoots, [&](Node *strongRoot)
-										{ return processRoot(strongRoot); });
-		*/
+		}
 #ifdef STATS_2
 		phaseTimeEnd = timer();
 		totalTimePhase[2] += phaseTimeEnd - phaseTimeStart;
 		phaseTimeStart = timer();
 #endif
 		// Phase 3: perform all the merges and push excess in parallel
-		parlay::parallel_for(0, curentHighRoots.size(), [&](size_t i)
+		if(curentHighRoots.size() < serial_limit)
+		{
+			for(size_t i=0; i<curentHighRoots.size(); i++)
+			{
+				if(mergeInfoVec[i].strongNode)
+				{
+					(*is_busy)[mergeInfoVec[i].weakRoot->number - 1] = false;
+
+					merge(mergeInfoVec[i].weakNode, mergeInfoVec[i].strongNode, mergeInfoVec[i].out);
+					pushExcess(mergeInfoVec[i].strongRoot);
+				} 
+			}
+		}
+		else
+		{
+			parlay::parallel_for(0, curentHighRoots.size(), [&](size_t i)
 			{
 				if(mergeInfoVec[i].strongNode)
 				{
@@ -1202,6 +1246,8 @@ pseudoflowPhase1(void)
 					pushExcess(mergeInfoVec[i].strongRoot);
 				} 
 			});
+		}
+		
 
 #ifdef STATS_2
 	phaseTimeEnd = timer();
