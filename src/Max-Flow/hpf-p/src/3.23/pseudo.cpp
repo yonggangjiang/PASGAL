@@ -1167,6 +1167,8 @@ pseudoflowPhase1(void)
 			{
 				mergeInfoVec[i] = processRoot(curentHighRoots[i]);
 				
+				//Since the merges are done in serial in this case, we do not need to check for conflicts
+				/*
 				if(mergeInfoVec[i].strongNode)
 				{
 					mergeInfoVec[i].weakRoot = getRoot(mergeInfoVec[i].weakNode);
@@ -1186,6 +1188,7 @@ pseudoflowPhase1(void)
 
 					mergeInfoVec[i] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 				}
+				*/
 			}
 		}
 		else
@@ -1227,7 +1230,8 @@ pseudoflowPhase1(void)
 			{
 				if(mergeInfoVec[i].strongNode)
 				{
-					(*is_busy)[mergeInfoVec[i].weakRoot->number - 1] = false;
+					//Since the merges are done in serial in this case, we do not need to check for conflicts
+					//(*is_busy)[mergeInfoVec[i].weakRoot->number - 1] = false;
 
 					merge(mergeInfoVec[i].weakNode, mergeInfoVec[i].strongNode, mergeInfoVec[i].out);
 					pushExcess(mergeInfoVec[i].strongRoot);
