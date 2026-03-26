@@ -1,13 +1,16 @@
-algo_list = ["pbbs", "hbf"]
+algo_list = ["hbf", "hpf-p", "hpf-p-serial"]
 
 parallel_algo = ["pbbs"]
 number_cores = [1, 2, 4, 8, 16, 32, 64]
-#test_list = ["GeoLifeNoScale_15_sym.bin"]
+
+#test_list = ["BVZ-tsukuba11.max"]
 test_list = []
 
-timeout = 60
+timeout = 3600 #1h
 
 print_output = False
+
+extra_data = []
 
 import logging
 import subprocess
@@ -22,6 +25,13 @@ def compile_all():
     subprocess.run(["make", "clean"], cwd="hbf", stdout=None)
     subprocess.run(["make"], cwd="hbf")
 
+    #hpf-p
+    subprocess.run(["make", "clean"], cwd="hpf-p", stdout=None)
+    subprocess.run(["make"], cwd="hpf-p")
+
+    #hpf-p-serial
+    subprocess.run(["make", "serial"], cwd="hpf-p")
+
     #dinic and push-relabel
     #subprocess.run(["cmake", ".."], cwd="../../build", stdout=None)
     #subprocess.run(["make"], cwd="../../build")
@@ -32,7 +42,7 @@ def compile_all():
 def run_alg(algo, test, cores=1):
 
     if algo == "hbf":
-        proc = subprocess.run(["./pseudo_lifo", "/data/graphs/" + test], cwd="hbf/bin",
+        proc = subprocess.run(["./pseudo_lifo", "/data/mchiriac/" + test], cwd="hbf/bin",
                                 encoding='utf-8', stdout=subprocess.PIPE,
                                 timeout=timeout)
         output = proc.stdout
@@ -40,6 +50,43 @@ def run_alg(algo, test, cores=1):
         time = float(re.search(r'Time to min cut\s*:\s*(\S+)', output).group(1))
         answer = int(re.search(r'Max Flow\s*:\s*(\S+)', output).group(1))
         
+        for line in output.splitlines():
+            if line.startswith('data'):
+                extra_data.append(line)
+
+        #print(extra_data)
+        
+        return (time, answer)
+
+    if algo == "hpf-p":
+        proc = subprocess.run(["./pseudo_fifo", "/data/mchiriac/" + test], cwd="hpf-p/bin",
+                                encoding='utf-8', stdout=subprocess.PIPE,
+                                timeout=timeout)
+        output = proc.stdout
+
+        time = float(re.search(r'Time to min cut\s*:\s*(\S+)', output).group(1))
+        answer = int(re.search(r'Max Flow\s*:\s*(\S+)', output).group(1))
+
+        for line in output.splitlines():
+            if line.startswith('data'):
+                extra_data.append(line)
+
+        return (time, answer)
+
+    
+    if algo == "hpf-p-serial":
+        proc = subprocess.run(["./pseudo_fifo_serial", "/data/mchiriac/" + test], cwd="hpf-p/bin",
+                                encoding='utf-8', stdout=subprocess.PIPE,
+                                timeout=timeout)
+        output = proc.stdout
+
+        time = float(re.search(r'Time to min cut\s*:\s*(\S+)', output).group(1))
+        answer = int(re.search(r'Max Flow\s*:\s*(\S+)', output).group(1))
+
+        for line in output.splitlines():
+            if line.startswith('data'):
+                extra_data.append(line)
+
         return (time, answer)
 
 
@@ -47,7 +94,7 @@ def run_alg(algo, test, cores=1):
         env = os.environ.copy()
         env['OMP_NUM_THREADS'] = str(cores)
 
-        proc = subprocess.run(["./maxFlow", "/data/graphs/" + test], cwd="pbbs",
+        proc = subprocess.run(["./maxFlow", "/data/mchiriac/" + test], cwd="pbbs",
                         encoding='utf-8', stdout=subprocess.PIPE,
                         env=env,
                         timeout=timeout)
@@ -95,6 +142,12 @@ def run_all():
                         " got: time: " + str(result[0]) +
                         ", flow: " + str(result[1]))
 
+                    #print(extra_data)
+
+                    for line in extra_data:
+                        logger.info(line)
+                    extra_data.clear()
+
                 except subprocess.TimeoutExpired:
                     logger.info("Algorithm " + algo + " timed out")
 
@@ -113,7 +166,7 @@ logging.basicConfig(filename='logs/results' + date.strftime("%d%b_%H:%M") + '.lo
 compile_all()
 
 if len(test_list) == 0:
-    test_list = os.listdir('/data/graphs')
+    test_list = os.listdir('/data/mchiriac')
     print(test_list)
 
 run_all()
